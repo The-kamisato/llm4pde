@@ -47,16 +47,15 @@ class Era5DataEncodingToToken(nn.Module):
         super(Era5DataEncodingToToken, self).__init__()
         self.if_surface_const_mask = if_surface_const_mask
         
-        land_mask, soil_type, topography = load_constant_mask()
+        land_mask, soil_type, topography = load_constant_mask(1)
         self.register_buffer("land_mask", land_mask)
         self.register_buffer("soil_type", soil_type)
         self.register_buffer("topography", topography)
 
-        self.conv_surface = nn.Conv2d(in_channels = surface_in_chans + 3 if if_surface_const_mask else surface_in_chans, out_channels = dim, kernel_size = (3, 3), stride = (2, 2), padding=(1, 1))
-        self.conv_upper = nn.Conv3d(in_channels = upper_in_chans, out_channels = dim, kernel_size = (3, 3, 3), stride = (2, 2, 2), padding=(1, 1, 1))
-
-        self.conv1 = nn.Conv3d(in_channels = dim, out_channels = dim * 2, kernel_size = (2, 3, 3), stride = (1, 2, 2), padding = (0, 1, 1))         
-        self.conv2 = nn.Conv3d(in_channels = dim * 2, out_channels = dim * 4, kernel_size = (2, 3, 3), stride = (1, 2, 2), padding = (0, 1, 1))
+        self.conv_surface = nn.Conv2d(in_channels = surface_in_chans + 3 if if_surface_const_mask else surface_in_chans, out_channels = dim, kernel_size = (7, 7), stride = (4, 4), padding=(3, 3))
+        self.conv_upper = nn.Conv3d(in_channels = upper_in_chans, out_channels = dim, kernel_size = (3, 7, 7), stride = (2, 4, 4), padding=(1, 3, 3))
+        self.conv1 = nn.Conv3d(in_channels = dim, out_channels = dim * 2, kernel_size = (3, 7, 7), stride = (2, 4, 4), padding = (1, 3, 3))         
+        self.conv2 = nn.Conv3d(in_channels = dim * 2, out_channels = dim * 4, kernel_size = (2, 7, 7), stride = (1, 4, 4), padding = (0, 3, 3))
         self.conv3 = nn.Conv3d(in_channels = dim * 4, out_channels = dim * 8, kernel_size = (2, 3, 3), stride = (1, 2, 2), padding = (0, 1, 1))
         self.conv4 = nn.Conv3d(in_channels = dim * 8, out_channels = dim * 16, kernel_size = (2, 3, 3), stride = (1, 2, 2), padding = (0, 1, 1))
         self.conv5 = nn.Conv3d(in_channels = dim * 16, out_channels = final_dim, kernel_size = (1, 1, 1), stride = (1, 1, 1), padding = (0, 0, 0))
@@ -99,15 +98,14 @@ class Era5DataEncodingToToken(nn.Module):
         if self.if_surface_const_mask:
             surface_u = self.concat_mask(surface_u)
 
-        surface_embedding = self.conv_surface(surface_u.flatten(0, 1)) # (b*t, dim, 90, 46)
+        surface_embedding = self.conv_surface(surface_u.flatten(0, 1)) # (b*t, dim, 360, 181)
         print(surface_embedding.shape)
 
-        upper_embedding = self.conv_upper(upper_u.flatten(0, 1)) # (b*t, dim, 7, 90, 46)
+        upper_embedding = self.conv_upper(upper_u.flatten(0, 1)) # (b*t, dim, 7, 360, 181)
         print(upper_embedding.shape)
 
-        x = torch.cat((surface_embedding[:, :, None, :, :], upper_embedding), dim = 2) #  (b*t, dim, 5, 90, 46)
-
-        x = self.conv1(self.act(self.ln1(x.transpose(1,-1)).transpose(1,-1))) # (b*t, dim * 2, 4, 45, 23)        
+        x = torch.cat((surface_embedding[:, :, None, :, :], upper_embedding), dim = 2) #  (b*t, dim, 8, 360, 181)
+        x = self.conv1(self.act(self.ln1(x.transpose(1,-1)).transpose(1,-1))) # (b*t, dim * 2, 4, 90, 46)        
         x = self.conv2(self.act(self.ln2(x.transpose(1,-1)).transpose(1,-1))) # (b*t, dim * 4, 3, 23, 12)
         x = self.conv3(self.act(self.ln3(x.transpose(1,-1)).transpose(1,-1))) # (b*t, dim * 8, 2, 12, 6)
         x = self.conv4(self.act(self.ln4(x.transpose(1,-1)).transpose(1,-1))) # (b*t, dim * 16, 1, 6, 3)
@@ -118,11 +116,11 @@ class Era5DataEncodingToToken(nn.Module):
         return x 
 
 if __name__ == "__main__":
-    surface_u = torch.randn(1, 12, 4, 180, 91).cuda()
-    upper_u = torch.randn(1, 12, 5, 7, 180, 91).cuda()
+    surface_u = torch.randn(1, 7, 4, 1440, 721).cuda()
+    upper_u = torch.randn(1, 7, 5, 13, 1440, 721).cuda()
 
     encoder = Era5DataEncodingToToken().cuda()
     count_parameters(encoder)
     token_embed = encoder(surface_u, upper_u)
 
-    print(token_embed.shape)            # (bsz = 1, (T = 12) * (n_token_per_time = 6 * 3), 4096)
+    print(token_embed.shape)            # (bsz = 1, (T = 7) * (n_token_per_time = 6 * 3), 4096)
