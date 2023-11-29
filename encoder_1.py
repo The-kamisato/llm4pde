@@ -138,7 +138,7 @@ if __name__ == "__main__":
     surface_u = torch.randn(1, 12, 4, 180, 91).cuda()
     upper_u = torch.randn(1, 12, 5, 7, 180, 91).cuda()
     
-    encoder = Era5DataEncodingToToken( if_surface_const_mask = False, if_upper_const_mask = False).cuda()
+    encoder = Era5DataEncodingToToken( if_surface_const_mask = True, if_upper_const_mask = False).cuda()
     token_embed = encoder(surface_u, upper_u)
     
     print(token_embed.shape)            # (bsz = 1, (T = 12) * (n_token_per_time = 6 * 3), 4096)
