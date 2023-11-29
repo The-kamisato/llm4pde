@@ -60,7 +60,6 @@ class Era5DataEncodingToToken(nn.Module):
         self.conv3 = nn.Conv3d(in_channels = dim * 4, out_channels = dim * 8, kernel_size = (2, 3, 3), stride = (1, 2, 2), padding = (0, 1, 1))
         self.conv4 = nn.Conv3d(in_channels = dim * 8, out_channels = dim * 16, kernel_size = (2, 3, 3), stride = (1, 2, 2), padding = (0, 1, 1))
         self.conv5 = nn.Conv3d(in_channels = dim * 16, out_channels = final_dim, kernel_size = (1, 1, 1), stride = (1, 1, 1), padding = (0, 0, 0))
-        # self.conv5 = nn.Conv3d(in_channels = dim * 16, out_channels = final_dim, kernel_size = (1, 1, 1), stride = (1, 2, 2), padding = (0, 1, 1))
 
         if act_type == 'newgelu':
             self.act = NewGELU()
