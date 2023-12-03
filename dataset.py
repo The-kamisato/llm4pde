@@ -109,7 +109,7 @@ class NCDatasetFolder(DatasetFolder):
             surface_sample_1 = torch.cat((surface_sample_1, surface_sample_2[:, :6, :, :]), dim = 1)
             surface_sample = surface_sample_1[:, self.day_cnt: self.day_cnt + sample_length]
             
-            self.day_cnt = self.day_cnt + sample_length - surface_sample_1.shape[1]        # 比如29 + 5 - 31 = 3, 为下个月开始取的索引
+            self.day_cnt = self.day_cnt + sample_length - (surface_sample_1.shape[1] - 6)      # 比如29 + 5 - 31 = 3, 为下个月开始取的索引
             self.month_cnt += 1                 # 下次就是从下个月的数据开始取
         else:
             surface_sample = surface_sample_1[:, self.day_cnt: self.day_cnt + sample_length]
