@@ -7,6 +7,18 @@ from torchvision.transforms import Compose, Lambda
 from torchvision import datasets, transforms
 from typing import Callable, Optional, Tuple, Any
 import netCDF4 as nc
+from datetime import datetime, timedelta
+
+
+def get_year_month_day(index):
+    start_date = datetime(year=2010, month=1, day=1)  # 设置起始日期
+    target_date = start_date + timedelta(days=index-1)  # 计算目标日期
+
+    year = target_date.year
+    month = target_date.month
+    day = target_date.day
+
+    return year, month, day
 
 def is_nc_file(filename):
     return filename.endswith('.nc')
@@ -73,7 +85,7 @@ class NCDatasetFolder(DatasetFolder):
             is_valid_file=is_valid_file,
         )
         
-        self.surface_keys = '2001-2009_years_surface_data'
+        self.surface_keys = 'years_surface_data'
         self.upper_keys = 'years_upper_data'
         self.surface_to_index = {self.surface_keys: self.class_to_idx[self.surface_keys]}
         self.upper_to_index = {self.upper_keys: self.class_to_idx[self.upper_keys]}
@@ -82,11 +94,8 @@ class NCDatasetFolder(DatasetFolder):
         self.loader_surface = loader_surface
         self.loader_upper = loader_upper
     
-        
-        self.day_cnt = 0                    # 月份中天数的计数, 0-31,用于索引surface中的数据
-        self.total_day_cnt = 0              # 总的天数的计数，用于索引upper的数据
-        self.month_cnt = 0                  # 总月份的计数(1,2...12,13,14...),用于索引surface中的数据
-    def __getitem__(self, index: int) -> Tuple[Any, Any]:
+    
+    def __getitem__(self, index: int) -> Tuple[Any, Any]:       # 定义了对象在使用索引操作符 []
         """
         Args:
             index (int): Index
@@ -94,26 +103,26 @@ class NCDatasetFolder(DatasetFolder):
         Returns:
             tuple: (sample, target) where target is class_index of the target class.
         """
-        print("day_cnt:", self.day_cnt)
-        print("total_day_cnt:", self.total_day_cnt)
-        print("month_cnt:", self.month_cnt)
-        sample_length = torch.randint(low = 2 , high = 8,size = (1, ))
+        print("index:", index)
         
         # 取surface数据, (sample = self.loader(path)的shape为[4, 31/30/29/28, 1440, 721])
-        path, target = self.samples_surface[self.month_cnt]
+        year, month, day = get_year_month_day(index)
+        
+        file_index = (year - 2010) * 12 + month - 1             # 月份sruface.nc的文件位置
+        
+        sample_length = torch.randint(low = 2 , high = 8,size = (1, ))
+        
+        path, target = self.samples_surface[file_index]
         surface_sample_1 = self.loader_surface(path)
         
-        if (self.day_cnt + sample_length > surface_sample_1.shape[1]):   # 如果跨越到了下个月
-            path, target = self.samples_surface[self.month_cnt + 1]      # 为了天的连续性，需要取出下个月份的前几天数据
+        print("surface_sample_path:", path)
+        
+        if (day + sample_length > surface_sample_1.shape[1]):   # 如果跨越到了下个月
+            path, target = self.samples_surface[file_index + 1]      # 为了天的连续性，需要取出下个月份的前几天数据
             surface_sample_2 = self.loader_surface(path)
             surface_sample_1 = torch.cat((surface_sample_1, surface_sample_2[:, :6, :, :]), dim = 1)
-            surface_sample = surface_sample_1[:, self.day_cnt: self.day_cnt + sample_length]
             
-            self.day_cnt = self.day_cnt + sample_length - (surface_sample_1.shape[1] - 6)      # 比如29 + 5 - 31 = 3, 为下个月开始取的索引
-            self.month_cnt += 1                 # 下次就是从下个月的数据开始取
-        else:
-            surface_sample = surface_sample_1[:, self.day_cnt: self.day_cnt + sample_length]
-            self.day_cnt += sample_length
+        surface_sample = surface_sample_1[:, day - 1: day - 1 + sample_length]
             
         if self.transform is not None:
             surface_sample = self.transform(surface_sample)         # 对后两个维度下采样  
@@ -123,8 +132,9 @@ class NCDatasetFolder(DatasetFolder):
         # 取upper数据, (sample = self.loader(path)的shape为[5, 13, 1440, 721])
         upper_sample = torch.zeros(5, sample_length, 13, 720, 361)
         for i in range(sample_length):
-            path, target = self.samples_upper[self.total_day_cnt + i]
+            path, target = self.samples_upper[index + i]
             upper_sample_part = self.loader_upper(path)
+            print("upper_sample_part_path:", path)
             
             if self.transform is not None:
                 upper_sample_part = self.transform(upper_sample_part)      # [5, 13, 1440, 721])对后两个维度下采样      
@@ -132,8 +142,6 @@ class NCDatasetFolder(DatasetFolder):
                 target = self.target_transform(target)
                 
             upper_sample[:, i, :, :, :] = upper_sample_part
-        
-        self.total_day_cnt += sample_length
             
         return surface_sample, upper_sample, target
         
@@ -146,8 +154,8 @@ transform = transforms.Compose([
 # 使用 NCDatasetFolder 来处理一系列 .nc 文件
 dataset = NCDatasetFolder('/data/lbk/pangu_data/cli_download_data/nc_data', is_valid_file = is_nc_file, 
                           loader_surface = nc_surface_loader, loader_upper = nc_upper_loader, transform = transform)
-for sample in dataset:
-    surface_data_tensor = sample[0]
-    upper_data_tensor = sample[1]
-    print(surface_data_tensor.shape)
-    print(upper_data_tensor.shape)
+sample = dataset[2001]
+surface_data_tensor = sample[0]
+upper_data_tensor = sample[1]
+print(surface_data_tensor.shape)
+print(upper_data_tensor.shape)
