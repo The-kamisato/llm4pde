@@ -22,7 +22,7 @@ wandb.login()
 
 from metric import cal_mae_mse
 from model import complete_model
-from data.class_dataset import NCDatasetFolder
+from data.class_dataset_1 import NCDatasetFolder
     
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -46,8 +46,8 @@ def parse_args():
     parser.add_argument('--scheduler_type', type=str, default="cosine_warmup")
     parser.add_argument('--scheduler_step', type=int, default=10)
     parser.add_argument('--scheduler_gamma', type=float, default=0.5)
-    parser.add_argument('--lora_r', type=int, default=None)
-    parser.add_argument('--lora_alpha', type=float, default=None)
+    # parser.add_argument('--lora_r', type=int, default=None)
+    # parser.add_argument('--lora_alpha', type=float, default=None)
     parser.add_argument('--lora_r_llama', type=int, default=8)
     parser.add_argument('--lora_alpha_llama', type=float, default=16)
     
@@ -59,12 +59,12 @@ def parse_args():
     parser.add_argument('--if_surface_const_mask', type=bool, default=True)
     parser.add_argument('--act_type', type=str, default="newgelu")
     parser.add_argument('--norm_type', type=str, default="ln")
-    parser.add_argument('--frozen_enc_dec', type=bool, default=False)
-    parser.add_argument('--load_pretrained_enc_dec', type=bool, default=False)
-    parser.add_argument('--llama_body', type=bool, default=False)
-    parser.add_argument('--frozen_llama', type=bool, default=True)
-    parser.add_argument('--time_embed', type=bool, default=False)
-    parser.add_argument('--pos_embed', type=bool, default=False)
+    parser.add_argument('--frozen_enc_dec', action='store_true', default=False)
+    parser.add_argument('--load_pretrained_enc_dec', action='store_true', default=False)
+    parser.add_argument('--llama_body', action='store_true', default=False)
+    parser.add_argument('--frozen_llama', action='store_true', default=False)
+    parser.add_argument('--time_embed', action='store_true', default=False)
+    parser.add_argument('--pos_embed', action='store_true', default=False)
     
     args = parser.parse_args()
     return args
@@ -240,7 +240,7 @@ class LlamaPdeTrainer:
         lat_weight_surface = cos_phi.reshape(1, 1, 1, 1, math.ceil(self.args.S2 / self.args.downsample)).repeat(
             self.args.batch_size, 1, self.args.surface_in_chans, math.ceil(self.args.S1 / self.args.downsample), 1).cuda()
         
-        lat_weight_upper = cos_phi.reshape(1, 1, 1, 1, 1, math.ceil(S2 / downsample)).repeat(
+        lat_weight_upper = cos_phi.reshape(1, 1, 1, 1, 1, math.ceil(self.args.S2 / self.args.downsample)).repeat(
             self.args.batch_size, 1, self.args.upper_in_chans, self.args.S0, math.ceil(self.args.S1 / self.args.downsample), 1).cuda()
 
         return lat_weight_surface, lat_weight_upper
@@ -276,6 +276,7 @@ class LlamaPdeTrainer:
                                                 lat_weight = self.lat_weight[1])
                 
                 l2 = 0.25 * torch.mean(surface_l2_mae) + torch.mean(upper_l2_mae_all)
+                print(l2)
                 total_l2 += l2
                 
                 l2 /= self.args.accumulation_steps  # 将损失除以累积步数
@@ -358,6 +359,7 @@ class LlamaPdeTrainer:
             
 def main():
     args = parse_args()
+    print(args)
     set_visible_devices(args.gpu)
     
     # wandb.init(project="llama4pde", name = "train_auto_enc_dec", config = parse_args())
