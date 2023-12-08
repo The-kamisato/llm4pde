@@ -417,8 +417,9 @@ class Llama4PdeTrainer:
                                                     target = test_upper_u.transpose(1,2), 
                                                     lat_weight = self.lat_weight[1].repeat(1, 1, upper_u_output.shape[1], 1, 1, 1))
                 
-                total_surface_MSE_loss.to(surface_MSE_loss.device)
-                total_upper_MSE_height_loss.to(upper_MSE_height_loss)
+                total_surface_MSE_loss = total_surface_MSE_loss.to(surface_MSE_loss.device)
+                total_upper_MSE_height_loss = total_upper_MSE_height_loss.to(upper_MSE_height_loss.device)
+                
                 total_surface_MSE_loss += surface_MSE_loss
                 total_upper_MSE_height_loss += upper_MSE_height_loss
         
@@ -436,12 +437,12 @@ class Llama4PdeTrainer:
             train_loss = self.train_epoch()
             test_loss = self.test_epoch()
 
-            # wandb.log({"lr": self.scheduler.get_lr()[0], 
-            #            "train_loss": train_loss,
-            #            "Z500": test_loss[1][0, 5], 
-            #            "T850": test_loss[1][2, 2],
-            #            "T2M": test_loss[0][3],
-            #            "U10": test_loss[0][1]})
+            wandb.log({"lr": self.scheduler.get_lr()[0], 
+                       "train_loss": train_loss,
+                       "Z500": test_loss[1][0, 5], 
+                       "T850": test_loss[1][2, 2],
+                       "T2M": test_loss[0][3],
+                       "U10": test_loss[0][1]})
             
             print(f'epoch {ep}: Learning rate {self.scheduler.get_lr()[0]}')
             print("train_loss = ", train_loss)
@@ -459,12 +460,12 @@ class Llama4PdeTrainer:
             train_loss = self.train_auto_epoch()
             test_loss = self.test_auto_epoch()
 
-            # wandb.log({"lr": self.scheduler.get_lr()[0], 
-            #            "train_loss": train_loss,
-            #            "Z500": test_loss[1][0, 5], 
-            #            "T850": test_loss[1][2, 2],
-            #            "T2M": test_loss[0][3],
-            #            "U10": test_loss[0][1]})
+            wandb.log({"lr": self.scheduler.get_lr()[0], 
+                       "train_loss": train_loss,
+                       "Z500": test_loss[1][0, 5], 
+                       "T850": test_loss[1][2, 2],
+                       "T2M": test_loss[0][3],
+                       "U10": test_loss[0][1]})
             
             print(f'epoch {ep}: Learning rate {self.scheduler.get_lr()[0]}')
             print("train_loss = ", train_loss)
@@ -478,7 +479,7 @@ def main():
     print(args)
     set_visible_devices(args.gpu)
     
-    # wandb.init(project="llama4pde", name = "train_auto_enc_dec", config = parse_args())
+    wandb.init(project="llama4pde", name = "train_auto_enc_dec", config = parse_args())
 
     random.seed(args.seed)                  # 设置Python标准库中random模块的随机数种子
     np.random.seed(args.seed)               # 设置NumPy库中random模块的随机数种子
