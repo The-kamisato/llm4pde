@@ -22,7 +22,7 @@ wandb.login()
 
 from metric import cal_mae_mse
 from model import complete_model
-from data.class_dataset_1 import NCDatasetFolder
+from data.class_pt_dataset import NCDatasetFolder
     
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -46,10 +46,12 @@ def parse_args():
     parser.add_argument('--scheduler_type', type=str, default="cosine_warmup")
     parser.add_argument('--scheduler_step', type=int, default=10)
     parser.add_argument('--scheduler_gamma', type=float, default=0.5)
+    parser.add_argument('--train_object', type=str, default="mae")
     # parser.add_argument('--lora_r', type=int, default=None)
     # parser.add_argument('--lora_alpha', type=float, default=None)
     parser.add_argument('--lora_r_llama', type=int, default=8)
     parser.add_argument('--lora_alpha_llama', type=float, default=16)
+    parser.add_argument('--train_auto', action='store_true', default=False)
     
     ## model_args
     parser.add_argument('--dim', type=int, default=64)
@@ -114,7 +116,7 @@ def deuniform(uniformed_surface_u, uniformed_upper_u):
     
     return surface_u, upper_u
 
-class LlamaPdeTrainer:
+class Llama4PdeTrainer:
     def __init__(self, args):
         self.args = args
         self.model = self.get_model()
@@ -125,6 +127,9 @@ class LlamaPdeTrainer:
         
         self.fabric = Fabric(accelerator = "cuda", precision = "bf16-mixed", devices = len(args.gpu), strategy = "DDP")
         self.fabric.launch()
+        
+        self.model, self.optimizer = self.fabric.setup(self.model, self.optimizer)
+        self.train_loader, self.test_loader = self.fabric.setup_dataloaders(self.train_loader, self.test_loader)
         
     def get_model(self):
         print("model building...")
@@ -224,6 +229,9 @@ class LlamaPdeTrainer:
         
         # dataset = NCDatasetFolder('/data/lbk/pangu_data/cli_download_data/nc_data', transform = transform)
         dataset = NCDatasetFolder('/data/lbk/pangu_data/cli_download_data/nc_data')
+        
+        print(len(dataset))
+        
         train_dataset = Subset(dataset, indices = range(self.args.ntrain - 1))
         test_dataset = Subset(dataset, indices = range(self.args.ntrain, len(dataset) - 6))
         
@@ -238,10 +246,10 @@ class LlamaPdeTrainer:
         cos_phi = cos_phi * 90 / (torch.sum(cos_phi))
         
         lat_weight_surface = cos_phi.reshape(1, 1, 1, 1, math.ceil(self.args.S2 / self.args.downsample)).repeat(
-            self.args.batch_size, 1, self.args.surface_in_chans, math.ceil(self.args.S1 / self.args.downsample), 1).cuda()
+            self.args.batch_size, self.args.surface_in_chans, 1, math.ceil(self.args.S1 / self.args.downsample), 1).cuda()
         
         lat_weight_upper = cos_phi.reshape(1, 1, 1, 1, 1, math.ceil(self.args.S2 / self.args.downsample)).repeat(
-            self.args.batch_size, 1, self.args.upper_in_chans, self.args.S0, math.ceil(self.args.S1 / self.args.downsample), 1).cuda()
+            self.args.batch_size, self.args.upper_in_chans, 1, self.args.S0, math.ceil(self.args.S1 / self.args.downsample), 1).cuda()
 
         return lat_weight_surface, lat_weight_upper
     
@@ -258,25 +266,31 @@ class LlamaPdeTrainer:
             # 累计梯度的时候
             with self.fabric.no_backward_sync(self.model, enabled=is_accumulating):
                 # 归一化
-                uniformed_train_surface_u,  uniformed_train_upper_u = uniform(train_surface_u, train_upper_u)
+                uniformed_train_surface_u, uniformed_train_upper_u = uniform(train_surface_u, train_upper_u)
                 
                 # 取出相应的时间作为输入
                 uniformed_surface_u_input = uniformed_train_surface_u[:, :-1, :, :, :]
                 uniformed_upper_u_input = uniformed_train_upper_u[:, :-1, :, :, :, :]
 
+                
                 # 经过模型并计算出相应的loss
                 uniformed_surface_u_output, uniformed_upper_u_output = self.model(uniformed_surface_u_input, uniformed_upper_u_input)
                 
-                surface_l2_mae, _ = cal_mae_mse(logits = uniformed_surface_u_output[:, -1:, :, :, :].transpose(1, 2), 
+                surface_MAE_loss, surface_MSE_loss = cal_mae_mse(logits = uniformed_surface_u_output[:, -1:, :, :, :].transpose(1, 2), 
                                                 target = uniformed_train_surface_u[:, -1:, :, :, :].transpose(1, 2), 
                                                 lat_weight = self.lat_weight[0])
                 
-                upper_l2_mae_all, _, _, _ = cal_mae_mse(logits = uniformed_upper_u_output[:, -1:, :, :, :, :].transpose(1, 2), 
+                upper_MAE_all_loss, upper_MSE_all_loss, _, _ = cal_mae_mse(logits = uniformed_upper_u_output[:, -1:, :, :, :, :].transpose(1, 2), 
                                                 target = uniformed_train_upper_u[:, -1:, :, :, :, :].transpose(1, 2), 
                                                 lat_weight = self.lat_weight[1])
                 
-                l2 = 0.25 * torch.mean(surface_l2_mae) + torch.mean(upper_l2_mae_all)
-                print(l2)
+                if self.args.train_object == "mae":
+                    l2 = 0.25 * torch.mean(surface_MAE_loss) + torch.mean(upper_MAE_all_loss)
+                if self.args.train_object == "mse":
+                    l2 = 0.25 * torch.mean(surface_MSE_loss) + torch.mean(upper_MSE_all_loss)
+                    
+                print("l2 when training: ", l2.item(), l2.device())
+          
                 total_l2 += l2
                 
                 l2 /= self.args.accumulation_steps  # 将损失除以累积步数
@@ -330,18 +344,120 @@ class LlamaPdeTrainer:
         
         return average_surface_MSE_loss, average_upper_MSE_loss
     
+    def train_auto_epoch(self):
+        self.model.train()
+        
+        total_l2 = 0
+        for train_batch_idx, batch in enumerate(self.train_loader):
+            l2 = 0
+            is_accumulating = (train_batch_idx + 1) % self.args.accumulation_steps != 0
+            train_surface_u, train_upper_u = batch
+            
+            # 累计梯度的时候
+            with self.fabric.no_backward_sync(self.model, enabled=is_accumulating):
+                # 归一化
+                uniformed_train_surface_u, uniformed_train_upper_u = uniform(train_surface_u, train_upper_u)
+                
+                # 经过模型并计算出相应的loss
+                uniformed_surface_u_output, uniformed_upper_u_output = self.model(uniformed_train_surface_u, uniformed_train_upper_u)
+
+                
+                surface_MAE_loss, surface_MSE_loss = cal_mae_mse(logits = uniformed_surface_u_output.transpose(1, 2), 
+                                                target = uniformed_train_surface_u.transpose(1, 2), 
+                                                lat_weight = self.lat_weight[0].repeat(1, 1, uniformed_surface_u_output.shape[1], 1, 1))
+                
+                upper_MAE_all_loss, upper_MSE_all_loss, _, _ = cal_mae_mse(logits = uniformed_upper_u_output.transpose(1, 2), 
+                                                target = uniformed_train_upper_u.transpose(1, 2), 
+                                                lat_weight = self.lat_weight[1].repeat(1, 1, uniformed_upper_u_output.shape[1], 1, 1, 1))
+                
+                if self.args.train_object == "mae":
+                    l2 = 0.25 * torch.mean(surface_MAE_loss) + torch.mean(upper_MAE_all_loss)
+                if self.args.train_object == "mse":
+                    l2 = 0.25 * torch.mean(surface_MSE_loss) + torch.mean(upper_MSE_all_loss)
+                print("l2 when training: ", l2.item(), l2.device)
+          
+                total_l2 += l2.item()
+                
+                l2 /= self.args.accumulation_steps  # 将损失除以累积步数
+            
+                self.fabric.backward(l2) 
+            
+            if not is_accumulating:
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+                self.scheduler.step()
+                
+        total_l2 = total_l2 / (train_batch_idx + 1)
+        return total_l2
+    
+    def test_auto_epoch(self):
+        self.model.eval()
+        with torch.no_grad():
+            total_surface_MSE_loss = torch.zeros(4, )
+            total_upper_MSE_height_loss = torch.zeros(5, 13)
+            
+            for test_batch_idx, batch in enumerate(self.test_loader):
+                test_surface_u, test_upper_u = batch            
+                
+                # 归一化
+                uniformed_test_surface_u, uniformed_test_upper_u = uniform(test_surface_u, test_upper_u)
+                
+                uniformed_surface_u_output, uniformed_upper_u_output = self.model(uniformed_test_surface_u, uniformed_test_upper_u)
+                
+                # 去归一化
+                surface_u_output, upper_u_output = deuniform(uniformed_surface_u_output, uniformed_upper_u_output) 
+                
+                # 计算loss
+                _, surface_MSE_loss = cal_mae_mse(logits = surface_u_output.transpose(1,2), 
+                                                    target = test_surface_u.transpose(1,2), 
+                                                    lat_weight = self.lat_weight[0].repeat(1, 1, surface_u_output.shape[1], 1, 1))
+                
+                _, _, _, upper_MSE_height_loss = cal_mae_mse(
+                                                    logits = upper_u_output.transpose(1,2), 
+                                                    target = test_upper_u.transpose(1,2), 
+                                                    lat_weight = self.lat_weight[1].repeat(1, 1, upper_u_output.shape[1], 1, 1, 1))
+                
+                total_surface_MSE_loss.to(surface_MSE_loss.device)
+                total_upper_MSE_height_loss.to(upper_MSE_height_loss)
+                total_surface_MSE_loss += surface_MSE_loss
+                total_upper_MSE_height_loss += upper_MSE_height_loss
+        
+        average_surface_MSE_loss = total_surface_MSE_loss / (test_batch_idx + 1)
+        average_upper_MSE_height_loss = total_upper_MSE_height_loss / (test_batch_idx + 1)
+        
+        return average_surface_MSE_loss, average_upper_MSE_height_loss
 
     def train(self):
-        self.model, self.optimizer = self.fabric.setup(self.model, self.optimizer)
-        self.train_loader, self.test_loader = self.fabric.setup_dataloaders(self.train_loader, self.test_loader)
-
         count_parameters(self.model)
         print("*****************start training*****************")
         
         for ep in range(self.args.epochs):
-        
+            
             train_loss = self.train_epoch()
             test_loss = self.test_epoch()
+
+            # wandb.log({"lr": self.scheduler.get_lr()[0], 
+            #            "train_loss": train_loss,
+            #            "Z500": test_loss[1][0, 5], 
+            #            "T850": test_loss[1][2, 2],
+            #            "T2M": test_loss[0][3],
+            #            "U10": test_loss[0][1]})
+            
+            print(f'epoch {ep}: Learning rate {self.scheduler.get_lr()[0]}')
+            print("train_loss = ", train_loss)
+            print("Z500 = ", test_loss[1][0, 5])
+            print("T850 = ", test_loss[1][2, 2])
+            print("T2M = ", test_loss[0][3])
+            print("U10 = ", test_loss[0][1])
+            
+    def train_auto(self):
+        count_parameters(self.model)
+        print("*****************start training auto*****************")
+        
+        for ep in range(self.args.epochs):
+            
+            train_loss = self.train_auto_epoch()
+            test_loss = self.test_auto_epoch()
 
             # wandb.log({"lr": self.scheduler.get_lr()[0], 
             #            "train_loss": train_loss,
@@ -371,9 +487,12 @@ def main():
     
     torch.set_float32_matmul_precision('medium')  
 
-    trainer = LlamaPdeTrainer(args)
+    trainer = Llama4PdeTrainer(args)
     
-    trainer.train()
+    if not args.train_auto:
+        trainer.train()
+    else:
+        trainer.train_auto()
     
 if __name__ == "__main__":
     main()
