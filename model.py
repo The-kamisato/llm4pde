@@ -34,6 +34,7 @@ class complete_model(nn.Module):
                                                     dim = dim, final_dim = final_dim, if_surface_const_mask = if_surface_const_mask)
         self.decoder = TokenDecodingToEra5DataSmall(surface_in_chans = surface_in_chans, upper_in_chans = upper_in_chans, act_type = act_type, norm_type = norm_type,
                                                     dim = dim, final_dim = final_dim)
+        
         if load_pretrained_enc_dec:
             self.encoder.load_state_dict(torch.load('enc_dec_ckpt/encoder.pt'))
             self.decoder.load_state_dict(torch.load('enc_dec_ckpt/decoder.pt'))
@@ -77,7 +78,6 @@ class complete_model(nn.Module):
             
     def forward(self, surface_u_input, upper_u_input, p = 1, h = 12, w = 6):
         token_embed = self.encoder(surface_u_input, upper_u_input)          # (1, 504, 4096)
-        
         if self.llama_body:
             token_embed = self.llama(input_ids = None, inputs_embeds = token_embed, output_hidden_states = True).hidden_states[-1]
             
