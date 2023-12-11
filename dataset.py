@@ -38,8 +38,8 @@ class LmdbDataset(Dataset):
         self.env = lmdb.open(self.db_path, map_size = 1099511627776)
 
     def __getitem__(self, index):
-        if self.env is None:
-            self._init_db()
+        # if self.env is None:
+        #     self._init_db()
         # Delay loading LMDB data until after initialization: https://github.com/chainer/chainermn/issues/129
         year, month, day = get_year_month_day(index)
         if year == 2021:
