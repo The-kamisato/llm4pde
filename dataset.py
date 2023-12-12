@@ -35,11 +35,14 @@ class LmdbDataset(Dataset):
 
 	
     def _init_db(self):
-        self.env = lmdb.open(self.db_path, map_size = 1099511627776)
+        self.env = lmdb.open(self.db_path, readonly=True, lock=False, readahead=True, meminit=False)
+        self.txn = self.env.begin()
 
     def __getitem__(self, index):
-        # if self.env is None:
-        #     self._init_db()
+        # time1 = time.time()
+        self._init_db()
+        # time2 = time.time()
+        # print("***************", time2 - time1)
         # Delay loading LMDB data until after initialization: https://github.com/chainer/chainermn/issues/129
         year, month, day = get_year_month_day(index)
         if year == 2021:
@@ -52,66 +55,24 @@ class LmdbDataset(Dataset):
         # 取upper数据, (sample = self.loader(path)的shape为[5, 13, 1440, 721])
         upper_sample = torch.zeros(sample_length, 5, 13, 720, 361)
 
-        env_upper = lmdb.open(self.db_path, map_size = 1099511627776) 
-        with env_upper.begin(write=False) as txn:
-            for i in range(sample_length):
-                # time1 = time.time()
-                upper_sample[i] = torch.tensor(np.frombuffer(txn.get(str(index + i).encode()), dtype=np.float32)).reshape(5, 13, 720, 361)
-                # time2 = time.time()
-                # print(time2 - time1)
-        txn.abort()
+
+        for i in range(sample_length):
+            # time1 = time.time()
+            upper_sample[i] = torch.tensor(np.frombuffer(self.txn.get(str(index + i).encode()), dtype=np.float32)).reshape(5, 13, 720, 361)
+            # time2 = time.time()
+            # print(time2 - time1)
+            
+        self.env.close()            
+        # env = lmdb.open(self.db_path, map_size = 1099511627776, readonly=True, lock=False, readahead=True, meminit=False)
+        # with env.begin(write=False) as txn:
+        #     for i in range(sample_length):
+        #         time1 = time.time()
+        #         upper_sample[i] = torch.tensor(np.frombuffer(txn.get(str(index + i).encode()), dtype=np.float32)).reshape(5, 13, 720, 361)
+        #         time2 = time.time()
+        #         print(time2 - time1)
+                
         
         return surface_sample, upper_sample
 
     def __len__(self) -> int:
         return len(self.samples_surface)
-
-        
-        
-if __name__ == "__main__":
-    dataset = LmdbDataset()
-    train_loader = DataLoader(dataset, batch_size = 1)
-    
-    
-    
-    print(len(train_loader))
-    for i, batch in enumerate(train_loader):
-        if i>=900:
-            break
-        a, b = batch
-
-        print(a.shape)
-        print(b.shape)
-        
-    
-    # data_iter = iter(train_loader)
-
-    # next_batch = next(data_iter) # start loading the first batch
-    # next_batch = [ _.cuda(non_blocking=True) for _ in next_batch ]  # with pin_memory=True and non_blocking=True, this will copy data to GPU non blockingly
-
-    # with profile(activities=[ProfilerActivity.CPU], record_shapes=True) as prof:
-    #     for i in range(10):
-    #         batch = next_batch 
-    #         if i + 2 != len(train_loader): 
-    #             # start copying data of next batch
-    #             next_batch = next(data_iter)
-    #             next_batch = [_.cuda() for _ in next_batch]
-                
-    #         surface_data_tensor, upper_data_tensor = batch
-    #         print(surface_data_tensor.shape)
-    #         print(upper_data_tensor.shape)
-    # print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=10))
-
-    
-    # for i in range(10):
-    #     with profile(activities=[ProfilerActivity.CPU], record_shapes=True) as prof:
-    #         batch = next_batch 
-    #         if i + 2 != len(train_loader): 
-    #                 # start copying data of next batch
-    #             next_batch = next(data_iter)
-    #             next_batch = [_.cuda() for _ in next_batch]
-                    
-    #         surface_data_tensor, upper_data_tensor = batch
-    #         print(surface_data_tensor.shape)
-    #         print(upper_data_tensor.shape)
-    #     print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=10))
