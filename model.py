@@ -47,33 +47,33 @@ class complete_model(nn.Module):
             self.encoder = self.encoder.eval()
             self.decoder = self.decoder.eval()
             
-        self.llama_body = llama_body
-        if llama_body:
-            self.llama = AutoModelForCausalLM.from_pretrained("/home/lbk/llama2-lora-fine-tuning/models/daryl149/llama-2-7b-chat-hf", config = llama_config, load_in_8bit = True)
-            if frozen_llama:
-                llama_config.time_embed = False
-                llama_config.pos_embed = False
-                for param in self.llama.parameters():
-                    param.requires_grad = False
-                    self.llama = self.llama.eval()
-            else:
-                llama_config.time_embed = time_embed
-                llama_config.pos_embed = pos_embed
-                self.llama = get_peft_model(self.llama, llama_lora_config)
+        # self.llama_body = llama_body
+        # if llama_body:
+        #     self.llama = AutoModelForCausalLM.from_pretrained("/home/lbk/llama2-lora-fine-tuning/models/daryl149/llama-2-7b-chat-hf", config = llama_config, load_in_8bit = True)
+        #     if frozen_llama:
+        #         llama_config.time_embed = False
+        #         llama_config.pos_embed = False
+        #         for param in self.llama.parameters():
+        #             param.requires_grad = False
+        #             self.llama = self.llama.eval()
+        #     else:
+        #         llama_config.time_embed = time_embed
+        #         llama_config.pos_embed = pos_embed
+        #         self.llama = get_peft_model(self.llama, llama_lora_config)
                 
-                if time_embed:
-                    self.llama.model.model.time_embedding = nn.Parameter(torch.empty(size=(50, llama_config.hidden_size), dtype=torch.float32, device=self.llama.device, requires_grad=True))
-                    nn.init.kaiming_normal_(self.llama.model.model.time_embedding)
-                else:
-                    self.llama.model.model.time_embedding = None
+        #         if time_embed:
+        #             self.llama.model.model.time_embedding = nn.Parameter(torch.empty(size=(50, llama_config.hidden_size), dtype=torch.float32, device=self.llama.device, requires_grad=True))
+        #             nn.init.kaiming_normal_(self.llama.model.model.time_embedding)
+        #         else:
+        #             self.llama.model.model.time_embedding = None
                 
-                if pos_embed:
-                    for i in range(llama_config.num_hidden_layers):
-                        self.llama.model.model.layers[i].self_attn.earth_specific_bias = nn.Parameter(torch.empty(size=(llama_config.n_token_per_time, llama_config.n_token_per_time, llama_config.num_attention_heads), 
-                                                                                                      dtype=torch.float32, device=self.llama.device, requires_grad=True))
-                        nn.init.kaiming_normal_(self.llama.model.model.layers[i].self_attn.earth_specific_bias)
-        else:
-            self.llama = None
+        #         if pos_embed:
+        #             for i in range(llama_config.num_hidden_layers):
+        #                 self.llama.model.model.layers[i].self_attn.earth_specific_bias = nn.Parameter(torch.empty(size=(llama_config.n_token_per_time, llama_config.n_token_per_time, llama_config.num_attention_heads), 
+        #                                                                                               dtype=torch.float32, device=self.llama.device, requires_grad=True))
+        #                 nn.init.kaiming_normal_(self.llama.model.model.layers[i].self_attn.earth_specific_bias)
+        # else:
+        #     self.llama = None
             
             
     def forward(self, surface_u_input, upper_u_input, p = 1, h = 12, w = 6):
