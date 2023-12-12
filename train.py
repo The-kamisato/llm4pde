@@ -45,7 +45,7 @@ def parse_args():
     parser.add_argument('--lr', type=float, default=5e-5)
     parser.add_argument('--weight_decay', type=float, default=1e-4)
     parser.add_argument('--scheduler_type', type=str, default="cosine_warmup")
-    parser.add_argument('--scheduler_step', type=int, default=10)
+    parser.add_argument('--scheduler_step', type=int, default=5)
     parser.add_argument('--scheduler_gamma', type=float, default=0.5)
     parser.add_argument('--train_object', type=str, default="mae")
     # parser.add_argument('--lora_r', type=int, default=None)
@@ -95,42 +95,47 @@ def load_static():
     weather_upper_std = torch.load("/home/lbk/llm/llama4pde/data/upper_std.pt").cuda()          # (5, 13)
     return weather_surface_mean, weather_surface_std, weather_upper_mean, weather_upper_std
 
-def normalize(surface_u, upper_u):
-    '''
-    surface_u.shape = torch.Size([bsz, T, C, H, W])
-    upper_u.shape = torch.Size([bsz, T, C, p, H, W])
-    weather_surface_mean, weather_surface_std.shape = torch.Size([C, ])
-    weather_upper_mean, weather_upper_std.shape = torch.Size([C, p,])
-    '''
-    weather_surface_mean, weather_surface_std, weather_upper_mean, weather_upper_std = load_static()
-
-    normalized_surface_u = ((surface_u.contiguous().transpose(2, 4).contiguous() - weather_surface_mean) / weather_surface_std).contiguous().transpose(2, 4).contiguous()
-    normalized_upper_u = ((upper_u.contiguous().permute(0, 1, 4, 5, 2, 3).contiguous() - weather_upper_mean) / weather_upper_std).contiguous().permute(0, 1, 4, 5, 2, 3).contiguous()
-    
-    return normalized_surface_u, normalized_upper_u
-
-def unnormalize(normalized_surface_u, normalized_upper_u):
-    weather_surface_mean, weather_surface_std, weather_upper_mean, weather_upper_std = load_static()
-    
-    surface_u = (normalized_surface_u.contiguous().transpose(2, 4).contiguous() * weather_surface_std + weather_surface_mean).contiguous().transpose(2, 4).contiguous()
-    upper_u = (normalized_upper_u.contiguous().permute(0, 1, 4, 5, 2, 3).contiguous() * weather_upper_std + weather_upper_mean).contiguous().permute(0, 1, 4, 5, 2, 3).contiguous()
-    
-    return surface_u, upper_u
-
 class Llama4PdeTrainer:
     def __init__(self, args):
         self.args = args
+        self.accelerator = Accelerator(gradient_accumulation_steps = args.accumulation_steps)
+        
         self.model = self.get_model()
         self.optimizer = self.get_optimizer()
         self.scheduler = self.get_scheduler()
         self.train_loader, self.test_loader = self.data_loader()
-        self.lat_weight = self.get_lat_weight()
         
-        self.accelerator = Accelerator(gradient_accumulation_steps = args.accumulation_steps)
+        self.lat_weight_surface, self.lat_weight_upper = self.get_lat_weight()
+        self.lat_weight_surface, self.lat_weight_upper = self.lat_weight_surface.to(self.accelerator.device), self.lat_weight_upper.to(self.accelerator.device)
+        self.weather_surface_mean, self.weather_surface_std, self.weather_upper_mean, self.weather_upper_std = load_static()
+        self.weather_surface_mean = self.weather_surface_mean[:, None, None].to(self.accelerator.device)
+        self.weather_surface_std = self.weather_surface_std[:, None, None].to(self.accelerator.device)
+        self.weather_upper_mean = self.weather_upper_mean[:, :, None, None].to(self.accelerator.device)
+        self.weather_upper_std = self.weather_upper_std[:, :, None, None].to(self.accelerator.device)
+        
+        
         self.model, self.optimizer, self.train_loader, self.test_loader = self.accelerator.prepare(
                                                                             self.model, self.optimizer, self.train_loader, self.test_loader)
         
-    
+    def normalize(self, surface_u, upper_u):
+        '''
+        surface_u.shape = torch.Size([bsz, T, C, H, W])
+        upper_u.shape = torch.Size([bsz, T, C, p, H, W])
+        weather_surface_mean, weather_surface_std.shape = torch.Size([C, 1, 1])
+        weather_upper_mean, weather_upper_std.shape = torch.Size([C, p, 1, 1])
+        '''
+        normalized_surface_u = ((surface_u - self.weather_surface_mean) / self.weather_surface_std)
+        normalized_upper_u = ((upper_u - self.weather_upper_mean) / self.weather_upper_std)
+        
+        return normalized_surface_u, normalized_upper_u
+
+    def unnormalize(self, normalized_surface_u, normalized_upper_u):
+        
+        surface_u = (normalized_surface_u * self.weather_surface_std + self.weather_surface_mean)
+        upper_u = (normalized_upper_u * self.weather_upper_std + self.weather_upper_mean)
+        
+        return surface_u, upper_u
+
     def get_model(self):
         print("model building...")
         
@@ -230,107 +235,109 @@ class Llama4PdeTrainer:
         train_dataset = Subset(dataset, indices = range(self.args.ntrain - 1))
         test_dataset = Subset(dataset, indices = range(self.args.ntrain, len(dataset) - 6))
       
-        train_loader = DataLoader(train_dataset, batch_size = self.args.batch_size, shuffle = True, num_workers = 4*len(self.args.gpu))
-        test_loader = DataLoader(test_dataset, batch_size = self.args.batch_size, shuffle = False, num_workers = 4*len(self.args.gpu))
-        # train_loader = DataLoader(train_dataset, batch_size = self.args.batch_size, shuffle = True, num_workers = 4 * len(self.args.gpu))
-        # test_loader = DataLoader(test_dataset, batch_size = self.args.batch_size, shuffle = False, num_workers = 4 * len(self.args.gpu))
+        train_loader = DataLoader(train_dataset, batch_size = self.args.batch_size, shuffle = True, num_workers = 4)
+        test_loader = DataLoader(test_dataset, batch_size = self.args.batch_size, shuffle = False, num_workers = 4)
         
         print(len(train_loader))
         print(len(test_loader))
         return train_loader, test_loader
     
     def get_lat_weight(self):
-        phi =  torch.linspace(90, 0, math.ceil(self.args.S2 / self.args.downsample))
+        phi =  torch.linspace(90, 0, math.ceil(self.args.S2 / self.args.downsample))        # 纬度上面(对应721那个维度)
         cos_phi = torch.cos((math.pi*phi)/180)
         cos_phi = cos_phi * 90 / (torch.sum(cos_phi))
         
+        # (1, 4, t = 1, 720, 361)
         lat_weight_surface = cos_phi.contiguous().reshape(1, 1, 1, 1, math.ceil(self.args.S2 / self.args.downsample)).repeat(
             self.args.batch_size, self.args.surface_in_chans, 1, math.ceil(self.args.S1 / self.args.downsample), 1).cuda()
         
+        # (1, 5, t = 1, 13, 720, 361), 作自回归的时候t=time, 用了一个repeat
         lat_weight_upper = cos_phi.contiguous().reshape(1, 1, 1, 1, 1, math.ceil(self.args.S2 / self.args.downsample)).repeat(
             self.args.batch_size, self.args.upper_in_chans, 1, self.args.S0, math.ceil(self.args.S1 / self.args.downsample), 1).cuda()
 
         return lat_weight_surface, lat_weight_upper
     
     
-    def train_epoch(self):
-        self.model.train()
+    # def train_epoch(self):
+    #     self.model.train()
         
-        total_loss = 0
-        for train_batch_idx, batch in enumerate(tqdm(self.train_loader)):
-            with self.accelerator.accumulate(self.model):
-                train_surface_u, train_upper_u = batch
-                # 归一化
-                normalized_train_surface_u, normalized_train_upper_u = normalize(train_surface_u, train_upper_u)
+    #     total_loss = 0
+    #     for train_batch_idx, batch in enumerate(tqdm(self.train_loader)):
+    #         with self.accelerator.accumulate(self.model):
+    #             train_surface_u, train_upper_u = batch
+    #             # 归一化
+    #             normalized_train_surface_u, normalized_train_upper_u = self.normalize(train_surface_u, train_upper_u)
                 
-                # 取出相应的时间作为输入
-                normalized_surface_u_input = normalized_train_surface_u[:, :-1, :, :, :]
-                normalized_upper_u_input = normalized_train_upper_u[:, :-1, :, :, :, :]
+    #             # 取出相应的时间作为输入
+    #             normalized_surface_u_input = normalized_train_surface_u[:, :-1, :, :, :]
+    #             normalized_upper_u_input = normalized_train_upper_u[:, :-1, :, :, :, :]
 
                 
-                # 经过模型并计算出相应的loss
-                normalized_surface_u_output, normalized_upper_u_output = self.model(normalized_surface_u_input, normalized_upper_u_input)
+    #             # 经过模型并计算出相应的loss
+    #             normalized_surface_u_output, normalized_upper_u_output = self.model(normalized_surface_u_input, normalized_upper_u_input)
                 
-                surface_MAE_loss, surface_MSE_loss = cal_mae_mse(logits = normalized_surface_u_output[:, -1:, :, :, :].contiguous().transpose(1, 2).contiguous(), 
-                                                target = normalized_train_surface_u[:, -1:, :, :, :].contiguous().transpose(1, 2).contiguous(), 
-                                                lat_weight = self.lat_weight[0])
+    #             surface_MAE_loss, surface_MSE_loss = cal_mae_mse(logits = normalized_surface_u_output[:, -1:, :, :, :].transpose(1,2), 
+    #                                             target = normalized_train_surface_u[:, -1:, :, :, :].transpose(1,2), 
+    #                                             lat_weight = self.lat_weight_surface)
                 
-                upper_MAE_all_loss, upper_MSE_all_loss, _, _ = cal_mae_mse(logits = normalized_upper_u_output[:, -1:, :, :, :, :].transpose(1, 2).contiguous(), 
-                                                target = normalized_train_upper_u[:, -1:, :, :, :, :].contiguous().transpose(1, 2).contiguous(), 
-                                                lat_weight = self.lat_weight[1])
+    #             upper_MAE_all_loss, upper_MSE_all_loss, _, _ = cal_mae_mse(logits = normalized_upper_u_output[:, -1:, :, :, :, :].transpose(1,2), 
+    #                                             target = normalized_train_upper_u[:, -1:, :, :, :, :].transpose(1,2), 
+    #                                             lat_weight = self.lat_weight_upper)
                 
-                if self.args.train_object == "mae":
-                    loss = 0.25 * torch.mean(surface_MAE_loss) + torch.mean(upper_MAE_all_loss)
-                if self.args.train_object == "mse":
-                    loss = 0.25 * torch.mean(surface_MSE_loss) + torch.mean(upper_MSE_all_loss)
-                total_loss += loss.item()
+    #             if self.args.train_object == "mae":
+    #                 loss = 0.25 * torch.mean(surface_MAE_loss) + torch.mean(upper_MAE_all_loss)
+    #             if self.args.train_object == "mse":
+    #                 loss = 0.25 * torch.mean(surface_MSE_loss) + torch.mean(upper_MSE_all_loss)
+    #             total_loss += loss.item()
             
-                self.accelerator.backward(loss) 
-                self.optimizer.step()
-                self.scheduler.step()
-                self.optimizer.zero_grad()
+    #             self.accelerator.backward(loss) 
+    #             self.optimizer.step()
+    #             self.scheduler.step()
+    #             self.optimizer.zero_grad()
                 
-        average_loss = total_loss / (train_batch_idx + 1)
-        return average_loss
+    #     average_loss = total_loss / (train_batch_idx + 1)
+    #     return average_loss
                 
-    def test_epoch(self):
-        self.model.eval()
-        with torch.no_grad():
-            total_surface_MSE_loss = torch.zeros(4, )
-            total_upper_MSE_loss = torch.zeros(5, 13)
+    # def test_epoch(self):
+    #     self.model.eval()
+    #     with torch.no_grad():
+    #         total_surface_MSE_loss = torch.zeros(4, ).to(self.accelerator.device)
+    #         total_upper_MSE_height_loss = torch.zeros(5, 13).to(self.accelerator.device)
             
-            for test_batch_idx, batch in enumerate(tqdm(self.test_loader)):
-                test_surface_u, test_upper_u = batch            # 都是前6天预测第7天
+    #         for test_batch_idx, batch in enumerate(tqdm(self.test_loader)):
+    #             test_surface_u, test_upper_u = batch            # 都是前6天预测第7天
                 
-                # 归一化
-                normalized_test_surface_u, normalized_test_upper_u = normalize(test_surface_u, test_upper_u)
+    #             # 归一化
+    #             normalized_test_surface_u, normalized_test_upper_u = self.normalize(test_surface_u, test_upper_u)
                 
-                # 取出相应的时间
-                normalized_surface_u_input = normalized_test_surface_u[:, :-1, :, :, :]
-                normalized_upper_u_input = normalized_test_upper_u[:, :-1, :, :, :, :]
+    #             # 取出相应的时间
+    #             normalized_surface_u_input = normalized_test_surface_u[:, :-1, :, :, :]
+    #             normalized_upper_u_input = normalized_test_upper_u[:, :-1, :, :, :, :]
                 
-                normalized_surface_u_output, normalized_upper_u_output = self.model(normalized_surface_u_input, normalized_upper_u_input)
+    #             normalized_surface_u_output, normalized_upper_u_output = self.model(normalized_surface_u_input, normalized_upper_u_input)
                 
-                # 去归一化
-                surface_u_output, upper_u_output = unnormalize(normalized_surface_u_output, normalized_upper_u_output) 
+    #             # 去归一化
+    #             surface_u_output, upper_u_output = self.unnormalize(normalized_surface_u_output, normalized_upper_u_output) 
                 
-                # 计算loss
-                _, surface_MSE_loss = cal_mae_mse(logits = surface_u_output[:, -1:, :, :, :].contiguous().transpose(1,2).contiguous(), 
-                                                                target = test_surface_u[:, -1:, :, :, :].contiguous().transpose(1,2).contiguous(), 
-                                                                lat_weight = self.lat_weight[0])
+    #             # 计算loss
+    #             _, surface_MSE_loss = cal_mae_mse(logits = surface_u_output[:, -1:, :, :, :].transpose(1,2), 
+    #                                                             target = test_surface_u[:, -1:, :, :, :].transpose(1,2), 
+    #                                                             lat_weight = self.lat_weight_surface)
                 
-                _, _, _, upper_MSE_height_loss = cal_mae_mse(
-                                                    logits = upper_u_output[:, -1:, :, :, :, :].contiguous().transpose(1,2).contiguous(), 
-                                                    target = test_upper_u[:, -1:, :, :, :, :].contiguous().transpose(1,2).contiguous(), 
-                                                    lat_weight = self.lat_weight[1])
+    #             _, _, _, upper_MSE_height_loss = cal_mae_mse(
+    #                                                 logits = upper_u_output[:, -1:, :, :, :, :].transpose(1,2), 
+    #                                                 target = test_upper_u[:, -1:, :, :, :, :].transpose(1,2), 
+    #                                                 lat_weight = self.lat_weight_upper)
                 
-                total_surface_MSE_loss += surface_MSE_loss
-                total_upper_MSE_loss += upper_MSE_height_loss
+    #             total_surface_MSE_loss += surface_MSE_loss
+    #             total_upper_MSE_height_loss += upper_MSE_height_loss
         
-        average_surface_MSE_loss = total_surface_MSE_loss / (test_batch_idx + 1)
-        average_upper_MSE_loss = total_upper_MSE_loss / (test_batch_idx + 1)
+    #     average_surface_MSE_loss = total_surface_MSE_loss / (test_batch_idx + 1)
+    #     average_upper_MSE_height_loss = total_upper_MSE_height_loss / (test_batch_idx + 1)
         
-        return average_surface_MSE_loss, average_upper_MSE_loss
+    #     average_surface_MSE_losses, average_upper_MSE_height_losses = self.accelerator.gather_for_metrics((average_surface_MSE_loss, average_upper_MSE_height_loss))
+        
+    #     return average_surface_MSE_losses, average_upper_MSE_height_losses
     
     def train_auto_epoch(self):
         self.model.train()
@@ -338,21 +345,29 @@ class Llama4PdeTrainer:
         total_loss = 0
         for train_batch_idx, batch in enumerate(tqdm(self.train_loader)):
             with self.accelerator.accumulate(self.model):
-                train_surface_u, train_upper_u = batch
-                normalized_train_surface_u, normalized_train_upper_u = normalize(train_surface_u, train_upper_u)
+                train_surface_u, train_upper_u = batch      # (1, time, 4, 720, 361)      (1, time, 5, 13, 720, 361)
+                
+                normalized_train_surface_u, normalized_train_upper_u = self.normalize(train_surface_u, train_upper_u)
+                
+                # (1, time, 5, 13, 720, 361) + (1, time, 5, 13, 720, 361) -卷积-> (bsz = 1, 12 * 6 * time, 4096) -> (1, time, 5, 13, 720, 361) + (1, time, 5, 13, 720, 361)
                 normalized_surface_u_output, normalized_upper_u_output = self.model(normalized_train_surface_u, normalized_train_upper_u)
-                surface_MAE_loss, surface_MSE_loss = cal_mae_mse(logits = normalized_surface_u_output.contiguous().transpose(1, 2).contiguous(), 
-                                                target = normalized_train_surface_u.contiguous().transpose(1, 2).contiguous(), 
-                                                lat_weight = self.lat_weight[0].repeat(1, 1, normalized_surface_u_output.shape[1], 1, 1))
-                upper_MAE_all_loss, upper_MSE_all_loss, _, _ = cal_mae_mse(logits = normalized_upper_u_output.contiguous().transpose(1, 2).contiguous(), 
-                                                 target = normalized_train_upper_u.contiguous().transpose(1, 2).contiguous(), 
-                                                 lat_weight = self.lat_weight[1].repeat(1, 1, normalized_upper_u_output.shape[1], 1, 1, 1))
+                
+                # cal_mae_mse函数里要求(batch, T, C, H, W)需要转为 (batch, C, T, H, W)
+                surface_MAE_loss, surface_MSE_loss = cal_mae_mse(logits = normalized_surface_u_output.transpose(1, 2), 
+                                                target = normalized_train_surface_u.transpose(1, 2), 
+                                                lat_weight = self.lat_weight_surface.repeat(1, 1, normalized_surface_u_output.shape[1], 1, 1))
+                # cal_mae_mse函数里要求(batch, T, C, p, H, W)需要转为 (batch, C, T, p, H, W)
+                upper_MAE_all_loss, upper_MSE_all_loss, _, _ = cal_mae_mse(logits = normalized_upper_u_output.transpose(1, 2), 
+                                                 target = normalized_train_upper_u.transpose(1, 2), 
+                                                 lat_weight = self.lat_weight_upper.repeat(1, 1, normalized_upper_u_output.shape[1], 1, 1, 1))
+                
                 if self.args.train_object == "mae":
-                    loss = 0.25 * torch.mean(surface_MAE_loss) + torch.mean(upper_MAE_all_loss)
+                    # loss = 0.25 * torch.mean(surface_MAE_loss) + torch.mean(upper_MAE_all_loss)
+                    loss = torch.mean(surface_MAE_loss) + 0.001 * torch.mean(upper_MAE_all_loss)
                 if self.args.train_object == "mse":
                     loss = 0.25 * torch.mean(surface_MSE_loss) + torch.mean(upper_MSE_all_loss)
-                total_loss += loss.item()
-                self.accelerator.print("index:", train_batch_idx, "loss when training: ", loss.item(), loss.device)
+                total_loss += loss.detach().item()
+                # self.accelerator.print("index:", train_batch_idx, "loss when training: ", loss.item(), loss.device)
                 
                 self.accelerator.backward(loss)
                 self.optimizer.step()
@@ -365,32 +380,30 @@ class Llama4PdeTrainer:
     def test_auto_epoch(self):
         self.model.eval()
         with torch.no_grad():
-            total_surface_MSE_loss = torch.zeros(4, )
-            total_upper_MSE_height_loss = torch.zeros(5, 13)
+            total_surface_MSE_loss = torch.zeros(4, ).to(self.accelerator.device)
+            total_upper_MSE_height_loss = torch.zeros(5, 13).to(self.accelerator.device)
             
             for test_batch_idx, batch in enumerate(tqdm(self.test_loader)):
                 test_surface_u, test_upper_u = batch            
                 
                 # 归一化
-                normalized_test_surface_u, normalized_test_upper_u = normalize(test_surface_u, test_upper_u)
+                normalized_test_surface_u, normalized_test_upper_u = self.normalize(test_surface_u, test_upper_u)
                 
                 normalized_surface_u_output, normalized_upper_u_output = self.model(normalized_test_surface_u, normalized_test_upper_u)
                 
                 # 去归一化
-                surface_u_output, upper_u_output = unnormalize(normalized_surface_u_output, normalized_upper_u_output) 
+                surface_u_output, upper_u_output = self.unnormalize(normalized_surface_u_output, normalized_upper_u_output) 
                 
                 # 计算loss
-                _, surface_MSE_loss = cal_mae_mse(logits = surface_u_output.contiguous().transpose(1,2).contiguous(), 
-                                                    target = test_surface_u.contiguous().transpose(1,2).contiguous(), 
-                                                    lat_weight = self.lat_weight[0].repeat(1, 1, surface_u_output.shape[1], 1, 1))
+                _, surface_MSE_loss = cal_mae_mse(logits = surface_u_output.transpose(1,2), 
+                                                    target = test_surface_u.transpose(1,2), 
+                                                    lat_weight = self.lat_weight_surface.repeat(1, 1, surface_u_output.shape[1], 1, 1))
                 
                 _, _, _, upper_MSE_height_loss = cal_mae_mse(
-                                                    logits = upper_u_output.contiguous().transpose(1,2).contiguous(), 
-                                                    target = test_upper_u.contiguous().transpose(1,2).contiguous(),
-                                                    lat_weight = self.lat_weight[1].repeat(1, 1, upper_u_output.shape[1], 1, 1, 1))
-                
-                total_surface_MSE_loss = total_surface_MSE_loss.to(surface_MSE_loss.device)
-                total_upper_MSE_height_loss = total_upper_MSE_height_loss.to(upper_MSE_height_loss.device)
+                                                    logits = upper_u_output.transpose(1,2), 
+                                                    target = test_upper_u.transpose(1,2),
+                                                    lat_weight = self.lat_weight_upper.repeat(1, 1, upper_u_output.shape[1], 1, 1, 1))
+
                 
                 total_surface_MSE_loss += surface_MSE_loss
                 total_upper_MSE_height_loss += upper_MSE_height_loss
@@ -398,7 +411,9 @@ class Llama4PdeTrainer:
         average_surface_MSE_loss = total_surface_MSE_loss / (test_batch_idx + 1)
         average_upper_MSE_height_loss = total_upper_MSE_height_loss / (test_batch_idx + 1)
         
-        return average_surface_MSE_loss, average_upper_MSE_height_loss
+        # 每个进程上的(4) (5, 13)在第一维度上concat (4 * num_process), (5 * num_process, 13)
+        average_surface_MSE_losses, average_upper_MSE_height_losses = self.accelerator.gather_for_metrics((average_surface_MSE_loss, average_upper_MSE_height_loss))
+        return average_surface_MSE_losses, average_upper_MSE_height_losses
 
     def train(self):
         count_parameters(self.model)
@@ -434,6 +449,7 @@ class Llama4PdeTrainer:
             train_loss = self.train_auto_epoch()
             test_loss = self.test_auto_epoch()
 
+            # 只看第一个进程上的loss
             wandb.log({"lr": self.scheduler.get_lr()[0], 
                        "train_loss": train_loss,
                        "Z500": test_loss[1][0, 5], 
@@ -441,12 +457,12 @@ class Llama4PdeTrainer:
                        "T2M": test_loss[0][3],
                        "U10": test_loss[0][1]})
             
-            print(f'epoch {ep}: Learning rate {self.scheduler.get_lr()[0]}')
-            print("train_loss = ", train_loss)
-            print("Z500 = ", test_loss[1][0, 5])
-            print("T850 = ", test_loss[1][2, 2])
-            print("T2M = ", test_loss[0][3])
-            print("U10 = ", test_loss[0][1])
+            self.accelerator.print(f'epoch {ep}: Learning rate {self.scheduler.get_lr()[0]}')
+            self.accelerator.print("train_loss = ", train_loss)
+            self.accelerator.print("Z500 = ", test_loss[1][0, 5])       
+            self.accelerator.print("T850 = ", test_loss[1][2, 2])
+            self.accelerator.print("T2M = ", test_loss[0][3])
+            self.accelerator.print("U10 = ", test_loss[0][1])
         
         self.accelerator.wait_for_everyone()
 def main():
