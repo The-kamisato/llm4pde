@@ -28,18 +28,33 @@ def cal_acc(logits, target, logits_mean, lat_weight):
   acc = acc_up / acc_down
   return acc
 
+# def cal_mae_mse(logits, target, lat_weight):
+#   residual2 = (logits-target) * (logits-target) * lat_weight    # 残差平方
+#   residual = (logits-target) * lat_weight             
+#   residual = torch.abs(residual)                                # 绝对残差
+#   if len(logits.shape)==6:      
+#     mae_all = torch.mean(residual, dim=(0, 2, 3, 4, 5))   # (batch, T, C, p, H, W)需要转为 (batch, C, T, p, H, W), 在外面使用.transpose(1, 2)
+#     mae_height = torch.mean(residual, dim=(0, 2, 4, 5))
+#     mse_all = torch.sqrt(torch.mean(residual2, dim=(0, 2, 3, 4, 5)))    
+#     mse_height = torch.sqrt(torch.mean(residual2, dim=(0, 2, 4, 5)))      # mse_height是(5, 13)的张量, [2, 2]对应的是T850, [0, 5]对应的是Z500
+#     return mae_all, mse_all, mae_height, mse_height
+#   elif len(logits.shape)==5:                              # (batch, T, C, H, W) 需要转为 (batch, C, T, H, W) 在外面使用.transpose(1, 2)
+#     mae_all = torch.mean(residual, dim=(0, 2, 3, 4))
+#     mse_all = torch.sqrt(torch.mean(residual2, dim=(0, 2, 3, 4)))
+#     return mae_all, mse_all
+
 def cal_mae_mse(logits, target, lat_weight):
-  lat_weight = lat_weight.to(target.device)
   residual2 = (logits-target) * (logits-target) * lat_weight    # 残差平方
   residual = (logits-target) * lat_weight             
   residual = torch.abs(residual)                                # 绝对残差
   if len(logits.shape)==6:      
-    mae_all = torch.mean(residual, dim=(0, 2, 3, 4, 5))   # (batch, T, C, p, H, W)需要转为 (batch, C, T, p, H, W), 在外面使用.transpose(1, 2)
+    mae_all = torch.mean(residual, dim=(0, 2, 3, 4, 5))    # (batch, T, C, p, H, W)需要转为 (batch, C, T, p, H, W), 在外面使用.transpose(1, 2)
     mae_height = torch.mean(residual, dim=(0, 2, 4, 5))
-    mse_all = torch.sqrt(torch.mean(residual2, dim=(0, 2, 3, 4, 5)))    
-    mse_height = torch.sqrt(torch.mean(residual2, dim=(0, 2, 4, 5)))      # mse_height是(5, 13)的张量, [2, 2]对应的是T850, [0, 5]对应的是Z500
+    
+    mse_all = torch.mean(torch.sqrt(torch.mean(residual2, dim=(3, 4, 5))), dim = (0, 2))    
+    mse_height = torch.mean(torch.sqrt(torch.mean(residual2, dim=(4, 5))), dim = (0, 2))     # mse_height是(5, 13)的张量, [2, 2]对应的是T850, [0, 5]对应的是Z500
     return mae_all, mse_all, mae_height, mse_height
   elif len(logits.shape)==5:                              # (batch, T, C, H, W) 需要转为 (batch, C, T, H, W) 在外面使用.transpose(1, 2)
     mae_all = torch.mean(residual, dim=(0, 2, 3, 4))
-    mse_all = torch.sqrt(torch.mean(residual2, dim=(0, 2, 3, 4)))
+    mse_all = torch.mean(torch.sqrt(torch.mean(residual2, dim=(3, 4))), dim = (0, 2))
     return mae_all, mse_all
