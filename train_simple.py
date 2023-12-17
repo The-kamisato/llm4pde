@@ -490,7 +490,7 @@ for ep in range(epochs):
         # lat_weight_surface[:,:,:,:,:-1]
         surface_MAE_loss, surface_MSE_loss = cal_mae_mse(logits = output_norm_surface_data.unsqueeze(dim = 2), 
                                                 target = input_norm_surface_data.unsqueeze(dim = 2), 
-                                                lat_weight = torch.ones(output_norm_surface_data.shape).cuda())
+                                                lat_weight = lat_weight_surface)
         # accelerator.print("training surface_MSE_loss: ", surface_MSE_loss)
         loss = torch.mean(surface_MAE_loss)
         # loss = 0.1 * surface_MAE_loss[0] + 0.4 * surface_MAE_loss[1] + 0.4 * surface_MAE_loss[2] + 0.1 * surface_MAE_loss[3]
@@ -525,10 +525,10 @@ for ep in range(epochs):
             output_surface_data = output_norm_surface_data * weather_surface_std + weather_surface_mean
             surface_MAE_loss, surface_MSE_loss = cal_mae_mse(logits = output_surface_data.unsqueeze(dim = 2), 
                                                     target = surface_data.unsqueeze(dim = 2), 
-                                                    lat_weight = torch.ones(output_surface_data.shape).to(accelerator.device))
+                                                    lat_weight = lat_weight_surface)
             surface_MAE_loss_norm, surface_MSE_loss_norm = cal_mae_mse(logits = output_norm_surface_data.unsqueeze(dim = 2), 
                                                     target = input_norm_surface_data.unsqueeze(dim = 2), 
-                                                    lat_weight = torch.ones(output_surface_data.shape).to(accelerator.device))
+                                                    lat_weight = lat_weight_surface)
             total_loss_norm += surface_MSE_loss_norm
             # surface_MAE_losses, surface_MSE_losses = accelerator.gather_for_metrics((surface_MAE_loss, surface_MSE_loss))
             total_loss += surface_MSE_loss
