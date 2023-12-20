@@ -194,8 +194,8 @@ class SimpleModel_4(nn.Module):
         # (b*t, 4 * dim, 23, 12) ->  (b*t, 4 * dim, 12, 6)
         self.conv4 = nn.Conv2d(in_channels = 8*dim, out_channels = 16*dim, kernel_size = (3, 3), stride = (2, 2), padding=(1, 1))
         
-        self.fc1 = nn.Linear(in_features=4, out_features=4096)
-        self.fc2 = nn.Linear(in_features=4096, out_features=4)
+        # self.fc1 = nn.Linear(in_features=4, out_features=4096)
+        # self.fc2 = nn.Linear(in_features=4096, out_features=4)
         # (b*t, 4 * dim, 12, 6) -> (b*t, 4 * dim, 23, 12) 
         self.deconv1 = nn.ConvTranspose2d(in_channels = 16*dim, out_channels = 8*dim, kernel_size = (3, 3), stride = (2, 2), padding=(1, 1), output_padding=(0, 1))
         # (b*t, 4 * dim, 23, 12) -> (b*t, 2 * dim, 46, 23) 
@@ -280,15 +280,15 @@ class SimpleModel_4(nn.Module):
         x = self.conv_surface(x)       # torch.Size([1, 64, 180, 91])
  
         x = self.conv1(self.norm1(self.act(x)))         #  (b*t, 128, 90, 46)
-        # x = self.conv2(self.norm2(self.act(x)))         #  (b*t, 256, 46, 23)
-        # x = self.conv3(self.norm3(self.act(x)))         #  (b*t, 512, 23, 12)
-        # x = self.conv4(self.norm4(self.act(x)))          #  (b*t, 1024, 12, 6)
-        # # x = self.fc1(x.transpose(1, -1))
-        # # # 反卷积
-        # # x = self.fc2(x).transpose(1, -1)
-        # x = self.act(self.norm5(self.deconv1(x)))    # torch.Size([1, 512, 23, 12])
-        # x = self.act(self.norm6(self.deconv2(x)))    # torch.Size([1, 256, 46, 23])
-        # x = self.act(self.norm7(self.deconv3(x)))    # torch.Size([1, 128, 90, 46])
+        x = self.conv2(self.norm2(self.act(x)))         #  (b*t, 256, 46, 23)
+        x = self.conv3(self.norm3(self.act(x)))         #  (b*t, 512, 23, 12)
+        x = self.conv4(self.norm4(self.act(x)))          #  (b*t, 1024, 12, 6)
+        # x = self.fc1(x.transpose(1, -1))
+        # # 反卷积
+        # x = self.fc2(x).transpose(1, -1)
+        x = self.act(self.norm5(self.deconv1(x)))    # torch.Size([1, 512, 23, 12])
+        x = self.act(self.norm6(self.deconv2(x)))    # torch.Size([1, 256, 46, 23])
+        x = self.act(self.norm7(self.deconv3(x)))    # torch.Size([1, 128, 90, 46])
         x = self.act(self.norm8(self.deconv4(x)))    # torch.Size([1, 64, 180, 91])
    
         x = self.deconv_surface(x)      # torch.Size([1, 4, 720, 361])
@@ -498,7 +498,7 @@ print(model)
 myloss = LpLoss()
 
 
-optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5, weight_decay=0)
+optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4, weight_decay=0)
 # optimizer = torch.optim.SGD(model.parameters(), lr=1e-4, momentum=0.9)
 
 
@@ -514,10 +514,10 @@ test_dataset = dataset[-365:]
 train_loader = DataLoader(train_dataset, batch_size = batch_size, shuffle = True, num_workers=4)
 test_loader = DataLoader(test_dataset, batch_size = batch_size, shuffle = False, num_workers=4)
 
-# scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size = 8*len(train_loader), gamma=0.5)
+scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size = 8*len(train_loader), gamma=0.5)
 # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=0)
-scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer=optimizer, max_lr=5e-4, 
-                              epochs=epochs, steps_per_epoch=len(train_loader))
+# scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer=optimizer, max_lr=5e-4, 
+#                               epochs=epochs, steps_per_epoch=len(train_loader))
 
 model, optimizer, train_loader, test_loader = accelerator.prepare(model, optimizer, train_loader, test_loader)
 
@@ -556,8 +556,10 @@ for ep in range(epochs):
         #                                         target = input_norm_surface_data.unsqueeze(dim = 2), 
         #                                         lat_weight = torch.ones(output_norm_surface_data.unsqueeze(dim = 2).shape).to(accelerator.device))
         # accelerator.print("training surface_MSE_loss: ", surface_MSE_loss)
-    
-        loss = myloss(output_norm_surface_data.flatten(1), input_norm_surface_data.flatten(1))        
+
+        # (bsz, 4, 720, 361)
+
+        loss = myloss(output_norm_surface_data.flatten(0, 1).flatten(1), input_norm_surface_data.flatten(0, 1).flatten(1)) / (4 * output_norm_surface_data.shape[0])      
         # loss = 0.1 * surface_MAE_loss[0] + 0.4 * surface_MAE_loss[1] + 0.4 * surface_MAE_loss[2] + 0.1 * surface_MAE_loss[3]
         
         
@@ -669,5 +671,6 @@ for ep in range(epochs):
 
         
         
+
 
 
