@@ -21,6 +21,7 @@ import random
 
 
 from metric import cal_mae_mse
+from losses import LpLoss
 from model import complete_model
 from data.class_lmdb_dataset import LmdbDataset
 from metric import cal_mae_mse
@@ -28,64 +29,78 @@ from metric import cal_mae_mse
 def init_weights(module):
     if isinstance(module, nn.Conv2d):
         # torch.nn.init.xavier_uniform_(module.weight)
-        torch.nn.init.kaiming_normal(module.weight)
+        torch.nn.init.xavier_uniform_(module.weight)
         module.bias.data.fill_(0.01)
     elif isinstance(module, nn.Linear):
         torch.nn.init.xavier_uniform_(module.weight)
         module.bias.data.fill_(0.01)
 
+class SimpleModel(nn.Module):
+    def __init__(self, dim=16):
+        super(SimpleModel, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels = dim, out_channels = 2*dim, kernel_size = (3, 3), stride = (2, 2), padding=(2, 1))  #  (b*t, 2 * dim, 45, 46) -> (b*t, 4 * dim, 23, 23)
+        self.conv2 = nn.Conv2d(in_channels = 2*dim, out_channels = 4*dim, kernel_size = (3, 3), stride = (2, 2), padding=(1, 1))   #  (b*t, 2 * dim, 23, 23) -> (b*t, 4 * dim, 12, 12)
+        self.conv3 = nn.Conv2d(in_channels = 4*dim, out_channels = 8*dim, kernel_size = (3, 3), stride = (2, 2), padding=(1, 1))     # (b*t, 4 * dim, 12, 12) ->  (b*t, 4 * dim, 6, 6)
+        
+        self.fc1 = nn.Linear(in_features=8*dim*12*6, out_features=4096) 
+        self.fc2 = nn.Linear(in_features=4096, out_features=8*dim*12*6) 
+        
+        self.deconv1 = nn.ConvTranspose2d(in_channels = 8*dim, out_channels = 4*dim, kernel_size = (3, 3), stride = (2, 2), padding=(1, 1), output_padding = (0, 1)) # (b*t, 4 * dim, 12, 6) -> (b*t, 4 * dim, 23, 12) 
+        self.deconv2 = nn.ConvTranspose2d(in_channels = 4*dim, out_channels = 2*dim, kernel_size = (3, 3), stride = (2, 2), padding=(1, 1), output_padding = (1, 0)) # (b*t, 4 * dim, 23, 12) -> (b*t, 2 * dim, 46, 23) 
+        self.deconv3 = nn.ConvTranspose2d(in_channels = 2*dim, out_channels = dim, kernel_size = (3, 3), stride = (2, 2), padding=(2, 1), output_padding = (1, 1))  #  (b*t, 4 * dim, 46, 23) -> (b*t, 2 * dim, 90, 46) 
+       
 class SimpleModel_4(nn.Module):
-    def __init__(self, dim=64):
-        super(SimpleModel_4, self).__init__()
+    # def __init__(self, dim=64):
+    #     super(SimpleModel_4, self).__init__()
         
-        # (b*t, 4, 720, 361) -> (b*t, dim, 180, 91)
-        self.conv_surface = nn.Conv2d(in_channels = 4, out_channels = dim, kernel_size = (5, 5), stride = (4, 4), padding=(2, 2))
-            #  (b*t, dim, 180, 91) -> (b*t, 2 * dim, 90, 46)
-        self.conv1 = nn.Conv2d(in_channels = dim, out_channels = 2*dim, kernel_size = (3, 3), stride = (1, 1), padding=(1, 1))
-        self.pool1 = nn.MaxPool2d(2, stride=2, padding = (0, 1))
-            #  (b*t, 2 * dim, 90, 46) -> (b*t, 4 * dim, 46, 23)
-        self.conv2 = nn.Conv2d(in_channels = 2*dim, out_channels = 4*dim, kernel_size = (3, 3), stride = (1, 1), padding=(1, 1))
-        self.pool2 = nn.MaxPool2d(2, stride=2, padding = (1, 0))
-        #  (b*t, 2 * dim, 46, 23) -> (b*t, 4 * dim, 23, 12)
-        self.conv3 = nn.Conv2d(in_channels = 4*dim, out_channels = 8*dim, kernel_size = (3, 3), stride = (1, 1), padding=(1, 1))
-        self.pool3 = nn.MaxPool2d(2, stride=2, padding = (0, 1))
-        # (b*t, 4 * dim, 23, 12) ->  (b*t, 4 * dim, 12, 6)
-        self.conv4 = nn.Conv2d(in_channels = 8*dim, out_channels = 16*dim, kernel_size = (3, 3), stride = (1, 1), padding=(1, 1))
-        self.pool4 = nn.MaxPool2d(2, stride=2, padding = (1, 0))
+    #     # (b*t, 4, 720, 361) -> (b*t, dim, 180, 91)
+    #     self.conv_surface = nn.Conv2d(in_channels = 4, out_channels = dim, kernel_size = (5, 5), stride = (4, 4), padding=(2, 2))
+    #         #  (b*t, dim, 180, 91) -> (b*t, 2 * dim, 90, 46)
+    #     self.conv1 = nn.Conv2d(in_channels = dim, out_channels = 2*dim, kernel_size = (3, 3), stride = (1, 1), padding=(1, 1))
+    #     self.pool1 = nn.MaxPool2d(2, stride=2, padding = (0, 1))
+    #         #  (b*t, 2 * dim, 90, 46) -> (b*t, 4 * dim, 46, 23)
+    #     self.conv2 = nn.Conv2d(in_channels = 2*dim, out_channels = 4*dim, kernel_size = (3, 3), stride = (1, 1), padding=(1, 1))
+    #     self.pool2 = nn.MaxPool2d(2, stride=2, padding = (1, 0))
+    #     #  (b*t, 2 * dim, 46, 23) -> (b*t, 4 * dim, 23, 12)
+    #     self.conv3 = nn.Conv2d(in_channels = 4*dim, out_channels = 8*dim, kernel_size = (3, 3), stride = (1, 1), padding=(1, 1))
+    #     self.pool3 = nn.MaxPool2d(2, stride=2, padding = (0, 1))
+    #     # (b*t, 4 * dim, 23, 12) ->  (b*t, 4 * dim, 12, 6)
+    #     self.conv4 = nn.Conv2d(in_channels = 8*dim, out_channels = 16*dim, kernel_size = (3, 3), stride = (1, 1), padding=(1, 1))
+    #     self.pool4 = nn.MaxPool2d(2, stride=2, padding = (1, 0))
         
-        self.fc1 = nn.Linear(in_features=16*dim, out_features=4096)
-        self.fc2 = nn.Linear(in_features=4096, out_features=16*dim)
-        # (b*t, 4 * dim, 12, 6) -> (b*t, 4 * dim, 23, 12) 
-        self.deconv1 = nn.ConvTranspose2d(in_channels = 16*dim, out_channels = 8*dim, kernel_size = (5, 4), stride = (2, 2), padding=(2, 1))
-        # (b*t, 4 * dim, 23, 12) -> (b*t, 2 * dim, 46, 23) 
-        self.deconv2 = nn.ConvTranspose2d(in_channels = 8*dim, out_channels = 4*dim, kernel_size = (4, 3), stride = (2, 2), padding=(1, 1))
-          #  (b*t, 4 * dim, 46, 23) -> (b*t, 2 * dim, 90, 46) 
-        self.deconv3 = nn.ConvTranspose2d(in_channels = 4*dim, out_channels = 2*dim, kernel_size = (4, 4), stride = (2, 2), padding=(2, 1))
-        # (b*t, 2 * dim, 90, 46) -> (b*t, dim, 180, 91)
-        self.deconv4 = nn.ConvTranspose2d(in_channels = 2*dim, out_channels = dim, kernel_size = (4, 3), stride = (2, 2), padding=(1, 1))
-        #  (b*t, dim, 180, 91) -> (b*t, 4, 720, 361)
-        self.deconv_surface = nn.ConvTranspose2d(in_channels = dim, out_channels = 4, kernel_size = (6, 5), stride = (4, 4), padding=(1, 2))
+    #     self.fc1 = nn.Linear(in_features=16*dim, out_features=4096)
+    #     self.fc2 = nn.Linear(in_features=4096, out_features=16*dim)
+    #     # (b*t, 4 * dim, 12, 6) -> (b*t, 4 * dim, 23, 12) 
+    #     self.deconv1 = nn.ConvTranspose2d(in_channels = 16*dim, out_channels = 8*dim, kernel_size = (5, 4), stride = (2, 2), padding=(2, 1))
+    #     # (b*t, 4 * dim, 23, 12) -> (b*t, 2 * dim, 46, 23) 
+    #     self.deconv2 = nn.ConvTranspose2d(in_channels = 16*dim, out_channels = 4*dim, kernel_size = (4, 3), stride = (2, 2), padding=(1, 1))
+    #       #  (b*t, 4 * dim, 46, 23) -> (b*t, 2 * dim, 90, 46) 
+    #     self.deconv3 = nn.ConvTranspose2d(in_channels = 8*dim, out_channels = 2*dim, kernel_size = (4, 4), stride = (2, 2), padding=(2, 1))
+    #     # (b*t, 2 * dim, 90, 46) -> (b*t, dim, 180, 91)
+    #     self.deconv4 = nn.ConvTranspose2d(in_channels = 4*dim, out_channels = dim, kernel_size = (4, 3), stride = (2, 2), padding=(1, 1))
+    #     #  (b*t, dim, 180, 91) -> (b*t, 4, 720, 361)
+    #     self.deconv_surface = nn.ConvTranspose2d(in_channels = dim, out_channels = 4, kernel_size = (6, 5), stride = (4, 4), padding=(1, 2))
         
-        # self.act = nn.Sigmoid()
-        # self.act = nn.GELU()
-        self.act = nn.Identity()
-        # self.norm1 = nn.GroupNorm(num_groups=32, num_channels=dim, eps=1e-6, affine=True)
-        # self.norm2 = nn.GroupNorm(num_groups=32, num_channels=dim*2, eps=1e-6, affine=True)
-        # self.norm3 = nn.GroupNorm(num_groups=32, num_channels=dim*4, eps=1e-6, affine=True)
-        # self.norm4 = nn.GroupNorm(num_groups=32, num_channels=dim*8, eps=1e-6, affine=True)
-        # self.norm5 = nn.GroupNorm(num_groups=32, num_channels=dim*8, eps=1e-6, affine=True)
-        # self.norm6 = nn.GroupNorm(num_groups=32, num_channels=dim*4, eps=1e-6, affine=True)
-        # self.norm7 = nn.GroupNorm(num_groups=32, num_channels=dim*2, eps=1e-6, affine=True)
-        # self.norm8 = nn.GroupNorm(num_groups=32, num_channels=dim, eps=1e-6, affine=True)
+    #     # self.act = nn.Sigmoid()
+    #     self.act = nn.GELU()
+    #     # self.act = nn.Identity()
+    #     self.norm1 = nn.GroupNorm(num_groups=32, num_channels=dim, eps=1e-6, affine=True)
+    #     self.norm2 = nn.GroupNorm(num_groups=32, num_channels=dim*2, eps=1e-6, affine=True)
+    #     self.norm3 = nn.GroupNorm(num_groups=32, num_channels=dim*4, eps=1e-6, affine=True)
+    #     self.norm4 = nn.GroupNorm(num_groups=32, num_channels=dim*8, eps=1e-6, affine=True)
+    #     self.norm5 = nn.GroupNorm(num_groups=32, num_channels=dim*8, eps=1e-6, affine=True)
+    #     self.norm6 = nn.GroupNorm(num_groups=32, num_channels=dim*4, eps=1e-6, affine=True)
+    #     self.norm7 = nn.GroupNorm(num_groups=32, num_channels=dim*2, eps=1e-6, affine=True)
+    #     self.norm8 = nn.GroupNorm(num_groups=32, num_channels=dim, eps=1e-6, affine=True)
         
-        self.norm1 = nn.Identity()
-        self.norm2 = nn.Identity()
-        self.norm3 = nn.Identity()
-        self.norm4 = nn.Identity()
-        self.norm5 = nn.Identity()
-        self.norm6 = nn.Identity()
-        self.norm7 = nn.Identity()
-        self.norm8 = nn.Identity()
+        # self.norm1 = nn.Identity()
+        # self.norm2 = nn.Identity()
+        # self.norm3 = nn.Identity()
+        # self.norm4 = nn.Identity()
+        # self.norm5 = nn.Identity()
+        # self.norm6 = nn.Identity()
+        # self.norm7 = nn.Identity()
+        # self.norm8 = nn.Identity()
     # def __init__(self, dim=64):
     #     super(SimpleModel_4, self).__init__()
         
@@ -165,44 +180,46 @@ class SimpleModel_4(nn.Module):
     #     self.norm8 = nn.GroupNorm(num_groups=32, num_channels=dim, eps=1e-6, affine=True)
     
     
-    # def __init__(self, dim=32):
-    #     super(SimpleModel_4, self).__init__()
+    def __init__(self, dim=192):
+        super(SimpleModel_4, self).__init__()
         
-    #     # (b*t, 4, 720, 361) -> (b*t, dim, 180, 91)
-    #     self.conv_surface = nn.Conv2d(in_channels = 4, out_channels = dim, kernel_size = (5, 5), stride = (4, 4), padding=(2, 2))
-    #         #  (b*t, dim, 180, 91) -> (b*t, 2 * dim, 90, 46)
-    #     self.conv1 = nn.Conv2d(in_channels = dim, out_channels = 2*dim, kernel_size = (3, 3), stride = (2, 2), padding=(1, 1))
-    #         #  (b*t, 2 * dim, 90, 46) -> (b*t, 4 * dim, 46, 23)
-    #     self.conv2 = nn.Conv2d(in_channels = 2*dim, out_channels = 4*dim, kernel_size = (3, 3), stride = (2, 2), padding=(2, 1))
-    #     #  (b*t, 2 * dim, 46, 23) -> (b*t, 4 * dim, 23, 12)
-    #     self.conv3 = nn.Conv2d(in_channels = 4*dim, out_channels = 8*dim, kernel_size = (3, 3), stride = (2, 2), padding=(1, 1))
-    #     # (b*t, 4 * dim, 23, 12) ->  (b*t, 4 * dim, 12, 6)
-    #     self.conv4 = nn.Conv2d(in_channels = 8*dim, out_channels = 16*dim, kernel_size = (3, 3), stride = (2, 2), padding=(1, 1))
+        # (b*t, 4, 720, 361) -> (b*t, dim, 180, 91)
+        self.conv_surface = nn.Conv2d(in_channels = 4, out_channels = dim, kernel_size = (15, 15), stride = (4, 4), padding=(7, 7))
+            #  (b*t, dim, 180, 91) -> (b*t, 2 * dim, 90, 46)
+        self.conv1 = nn.Conv2d(in_channels = dim, out_channels = 2*dim, kernel_size = (9, 9), stride = (2, 2), padding=(4, 4))
+            #  (b*t, 2 * dim, 90, 46) -> (b*t, 4 * dim, 46, 23)
+        self.conv2 = nn.Conv2d(in_channels = 2*dim, out_channels = 4*dim, kernel_size = (7, 7), stride = (2, 2), padding=(4, 3))
+        #  (b*t, 2 * dim, 46, 23) -> (b*t, 4 * dim, 23, 12)
+        self.conv3 = nn.Conv2d(in_channels = 4*dim, out_channels = 8*dim, kernel_size = (5, 5), stride = (2, 2), padding=(2, 2))
+        # (b*t, 4 * dim, 23, 12) ->  (b*t, 4 * dim, 12, 6)
+        self.conv4 = nn.Conv2d(in_channels = 8*dim, out_channels = 16*dim, kernel_size = (3, 3), stride = (2, 2), padding=(1, 1))
         
-    #     self.fc1 = nn.Linear(in_features=16*dim, out_features=4096)
-    #     self.fc2 = nn.Linear(in_features=4096, out_features=16*dim)
-    #     # (b*t, 4 * dim, 12, 6) -> (b*t, 4 * dim, 23, 12) 
-    #     self.deconv1 = nn.ConvTranspose2d(in_channels = 16*dim, out_channels = 8*dim, kernel_size = (5, 4), stride = (2, 2), padding=(2, 1))
-    #     # (b*t, 4 * dim, 23, 12) -> (b*t, 2 * dim, 46, 23) 
-    #     self.deconv2 = nn.ConvTranspose2d(in_channels = 8*dim, out_channels = 4*dim, kernel_size = (4, 3), stride = (2, 2), padding=(1, 1))
-    #       #  (b*t, 4 * dim, 46, 23) -> (b*t, 2 * dim, 90, 46) 
-    #     self.deconv3 = nn.ConvTranspose2d(in_channels = 4*dim, out_channels = 2*dim, kernel_size = (4, 4), stride = (2, 2), padding=(2, 1))
-    #     # (b*t, 2 * dim, 90, 46) -> (b*t, dim, 180, 91)
-    #     self.deconv4 = nn.ConvTranspose2d(in_channels = 2*dim, out_channels = dim, kernel_size = (4, 3), stride = (2, 2), padding=(1, 1))
-    #     #  (b*t, dim, 180, 91) -> (b*t, 4, 720, 361)
-    #     self.deconv_surface = nn.ConvTranspose2d(in_channels = dim, out_channels = 4, kernel_size = (6, 5), stride = (4, 4), padding=(1, 2))
+        self.fc1 = nn.Linear(in_features=4, out_features=4096)
+        self.fc2 = nn.Linear(in_features=4096, out_features=4)
+        # (b*t, 4 * dim, 12, 6) -> (b*t, 4 * dim, 23, 12) 
+        self.deconv1 = nn.ConvTranspose2d(in_channels = 16*dim, out_channels = 8*dim, kernel_size = (3, 3), stride = (2, 2), padding=(1, 1), output_padding=(0, 1))
+        # (b*t, 4 * dim, 23, 12) -> (b*t, 2 * dim, 46, 23) 
+        self.deconv2 = nn.ConvTranspose2d(in_channels = 8*dim, out_channels = 4*dim, kernel_size = (5, 5), stride = (2, 2), padding=(2, 2), output_padding=(1, 0))
         
-    #     # self.act = nn.Sigmoid()
-    #     self.act = nn.ReLU()
+          #  (b*t, 4 * dim, 46, 23) -> (b*t, 2 * dim, 90, 46) 
+        self.deconv3 = nn.ConvTranspose2d(in_channels = 4*dim, out_channels = 2*dim, kernel_size = (7, 7), stride = (2, 2), padding=(4, 3), output_padding=(1, 1))
+        # self.deconv3 = nn.Identity()
+        # (b*t, 2 * dim, 90, 46) -> (b*t, dim, 180, 91)
+        self.deconv4 = nn.ConvTranspose2d(in_channels = 2*dim, out_channels = dim, kernel_size = (9, 9), stride = (2, 2), padding=(4, 4), output_padding=(1, 0))
+        #  (b*t, dim, 180, 91) -> (b*t, 4, 720, 361)
+        self.deconv_surface = nn.ConvTranspose2d(in_channels = dim, out_channels = 4,  kernel_size = (15, 15), stride = (4, 4), padding=(7, 7), output_padding=(3, 0))
         
-    #     self.norm1 = nn.GroupNorm(num_groups=32, num_channels=dim, eps=1e-6, affine=True)
-    #     self.norm2 = nn.GroupNorm(num_groups=32, num_channels=dim*2, eps=1e-6, affine=True)
-    #     self.norm3 = nn.GroupNorm(num_groups=32, num_channels=dim*4, eps=1e-6, affine=True)
-    #     self.norm4 = nn.GroupNorm(num_groups=32, num_channels=dim*8, eps=1e-6, affine=True)
-    #     self.norm5 = nn.GroupNorm(num_groups=32, num_channels=dim*8, eps=1e-6, affine=True)
-    #     self.norm6 = nn.GroupNorm(num_groups=32, num_channels=dim*4, eps=1e-6, affine=True)
-    #     self.norm7 = nn.GroupNorm(num_groups=32, num_channels=dim*2, eps=1e-6, affine=True)
-    #     self.norm8 = nn.GroupNorm(num_groups=32, num_channels=dim, eps=1e-6, affine=True)
+        # self.act = nn.Sigmoid()
+        self.act = nn.GELU()
+        
+        self.norm1 = nn.GroupNorm(num_groups=32, num_channels=dim, eps=1e-6, affine=True)
+        self.norm2 = nn.GroupNorm(num_groups=32, num_channels=dim*2, eps=1e-6, affine=True)
+        self.norm3 = nn.GroupNorm(num_groups=32, num_channels=dim*4, eps=1e-6, affine=True)
+        self.norm4 = nn.GroupNorm(num_groups=32, num_channels=dim*8, eps=1e-6, affine=True)
+        self.norm5 = nn.GroupNorm(num_groups=32, num_channels=dim*8, eps=1e-6, affine=True)
+        self.norm6 = nn.GroupNorm(num_groups=32, num_channels=dim*4, eps=1e-6, affine=True)
+        self.norm7 = nn.GroupNorm(num_groups=32, num_channels=dim*2, eps=1e-6, affine=True)
+        self.norm8 = nn.GroupNorm(num_groups=32, num_channels=dim, eps=1e-6, affine=True)
         # self.act = nn.Identity()
         
         # self.norm1 = TransposeLN(64)
@@ -218,20 +235,60 @@ class SimpleModel_4(nn.Module):
         # self.norm7 = nn.Identity()
         # self.norm8 = nn.Identity()
     
+    # def forward(self, x):           # (1, 4, 720, 361)
+    #     # 卷积
+    #     x = self.conv_surface(x)       # torch.Size([1, 64, 180, 91])
+ 
+    #     x1 = self.pool1(self.conv1(self.norm1(self.act(x))))         #  (b*t, 128, 90, 46)
+    #     x2 = self.pool2(self.conv2(self.norm2(self.act(x1))))         #  (b*t, 256, 46, 23)
+    #     x3 = self.pool3(self.conv3(self.norm3(self.act(x2))))         #  (b*t, 512, 23, 12)
+    #     x4 = self.pool4(self.conv4(self.norm4(self.act(x3))))         #  (b*t, 1024, 12, 6)
+    #     # x = self.fc1(x.transpose(1, -1))
+    #     # # 反卷积
+    #     # x = self.fc2(x).transpose(1, -1)
+    #     x = self.act(self.norm5(self.deconv1(x4)))   # torch.Size([1, 512, 23, 12])
+    #     x = self.act(self.norm6(self.deconv2(x + x3)))    # torch.Size([1, 256, 46, 23])
+    #     x = self.act(self.norm7(self.deconv3(x + x2)))    # torch.Size([1, 128, 90, 46])
+    #     x = self.act(self.norm8(self.deconv4(x + x1)))    # torch.Size([1, 64, 180, 91])
+   
+    #     x = self.deconv_surface(x)      # torch.Size([1, 4, 720, 361])
+      
+    #     return x
+    
+    # def forward(self, x):           # (1, 4, 720, 361)
+    #     # 卷积
+    #     x = self.conv_surface(x)       # torch.Size([1, 64, 180, 91])
+ 
+    #     x1 = self.pool1(self.conv1(self.norm1(self.act(x))))         #  (b*t, 128, 90, 46)
+    #     x2 = self.pool2(self.conv2(self.norm2(self.act(x1))))         #  (b*t, 256, 46, 23)
+    #     x3 = self.pool3(self.conv3(self.norm3(self.act(x2))))         #  (b*t, 512, 23, 12)
+    #     x4 = self.pool4(self.conv4(self.norm4(self.act(x3))))         #  (b*t, 1024, 12, 6)
+    #     # x = self.fc1(x.transpose(1, -1))
+    #     # # 反卷积
+    #     # x = self.fc2(x).transpose(1, -1)
+    #     x = self.act(self.norm5(self.deconv1(x4)))   # torch.Size([1, 512, 23, 12])
+    #     x = self.act(self.norm6(self.deconv2(torch.cat((x, x3), dim = 1))))    # torch.Size([1, 256, 46, 23])
+    #     x = self.act(self.norm7(self.deconv3(torch.cat((x, x2), dim = 1))))    # torch.Size([1, 128, 90, 46])
+    #     x = self.act(self.norm8(self.deconv4(torch.cat((x, x1), dim = 1))))    # torch.Size([1, 64, 180, 91])
+   
+    #     x = self.deconv_surface(x)      # torch.Size([1, 4, 720, 361])
+      
+    #     return x
+    
     def forward(self, x):           # (1, 4, 720, 361)
         # 卷积
         x = self.conv_surface(x)       # torch.Size([1, 64, 180, 91])
  
-        x = self.pool1(self.conv1(self.norm1(self.act(x))))         #  (b*t, 128, 90, 46)
-        x = self.pool2(self.conv2(self.norm2(self.act(x))))         #  (b*t, 256, 46, 23)
-        x = self.pool3(self.conv3(self.norm3(self.act(x))))         #  (b*t, 512, 23, 12)
-        x = self.pool4(self.conv4(self.norm4(self.act(x))))         #  (b*t, 1024, 12, 6)
-        # x = self.fc1(x.transpose(1, -1))
-        # # 反卷积
-        # x = self.fc2(x).transpose(1, -1)
-        x = self.act(self.norm5(self.deconv1(x)))    # torch.Size([1, 512, 23, 12])
-        x = self.act(self.norm6(self.deconv2(x)))    # torch.Size([1, 256, 46, 23])
-        x = self.act(self.norm7(self.deconv3(x)))    # torch.Size([1, 128, 90, 46])
+        x = self.conv1(self.norm1(self.act(x)))         #  (b*t, 128, 90, 46)
+        # x = self.conv2(self.norm2(self.act(x)))         #  (b*t, 256, 46, 23)
+        # x = self.conv3(self.norm3(self.act(x)))         #  (b*t, 512, 23, 12)
+        # x = self.conv4(self.norm4(self.act(x)))          #  (b*t, 1024, 12, 6)
+        # # x = self.fc1(x.transpose(1, -1))
+        # # # 反卷积
+        # # x = self.fc2(x).transpose(1, -1)
+        # x = self.act(self.norm5(self.deconv1(x)))    # torch.Size([1, 512, 23, 12])
+        # x = self.act(self.norm6(self.deconv2(x)))    # torch.Size([1, 256, 46, 23])
+        # x = self.act(self.norm7(self.deconv3(x)))    # torch.Size([1, 128, 90, 46])
         x = self.act(self.norm8(self.deconv4(x)))    # torch.Size([1, 64, 180, 91])
    
         x = self.deconv_surface(x)      # torch.Size([1, 4, 720, 361])
@@ -415,8 +472,8 @@ random.seed(seed)                  # 设置Python标准库中random模块的随�
 np.random.seed(seed)               # 设置NumPy库中random模块的随机数种子
 torch.manual_seed(seed)            # 设置PyTorch库中的随机数种子
 torch.cuda.manual_seed_all(seed)
-batch_size = 1
-epochs = 100
+batch_size = 16
+epochs = 500
 # accelerator = Accelerator(gradient_accumulation_steps = 1)
 accelerator = Accelerator()
 
@@ -438,15 +495,17 @@ weather_upper_std = weather_upper_std[:, :, None, None].to(accelerator.device)
 model = SimpleModel_4()
 model.apply(init_weights)
 print(model)
+myloss = LpLoss()
 
 
-optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
+optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5, weight_decay=0)
 # optimizer = torch.optim.SGD(model.parameters(), lr=1e-4, momentum=0.9)
 
 
 surface_data_path = "/data/lbk/pangu_data/cli_download_data/tensored_years_surface_data/surface_data_720_361.pt"
 
 dataset = torch.load(surface_data_path)         # (4383, 4, 720, 361)
+# dataset = torch.randn(10, 4, 720, 361)
 print("load over!!")
 
 train_dataset = dataset[:4018]
@@ -455,10 +514,10 @@ test_dataset = dataset[-365:]
 train_loader = DataLoader(train_dataset, batch_size = batch_size, shuffle = True, num_workers=4)
 test_loader = DataLoader(test_dataset, batch_size = batch_size, shuffle = False, num_workers=4)
 
-scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size = 20*len(train_loader), gamma=0.5)
+# scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size = 8*len(train_loader), gamma=0.5)
 # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10, eta_min=0)
-# scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer=optimizer, max_lr=8e-4, 
-#                               epochs=epochs, steps_per_epoch=len(train_loader))
+scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer=optimizer, max_lr=5e-4, 
+                              epochs=epochs, steps_per_epoch=len(train_loader))
 
 model, optimizer, train_loader, test_loader = accelerator.prepare(model, optimizer, train_loader, test_loader)
 
@@ -481,18 +540,24 @@ for ep in range(epochs):
         #     optimizer.step()
         #     scheduler.step()
         #     optimizer.zero_grad()
+     
         input_norm_surface_data = (surface_data - weather_surface_mean) / weather_surface_std
- 
+        # input_norm_surface_data = surface_data
         output_norm_surface_data = model(input_norm_surface_data)
 
         
     
         # lat_weight_surface[:,:,:,:,:-1]
-        surface_MAE_loss, surface_MSE_loss = cal_mae_mse(logits = output_norm_surface_data.unsqueeze(dim = 2), 
-                                                target = input_norm_surface_data.unsqueeze(dim = 2), 
-                                                lat_weight = lat_weight_surface)
+        # surface_MAE_loss, surface_MSE_loss = cal_mae_mse(logits = output_norm_surface_data.unsqueeze(dim = 2), 
+        #                                         target = input_norm_surface_data.unsqueeze(dim = 2), 
+        #                                         lat_weight = lat_weight_surface)
+        
+        # surface_MAE_loss, surface_MSE_loss = cal_mae_mse(logits = output_norm_surface_data.unsqueeze(dim = 2), 
+        #                                         target = input_norm_surface_data.unsqueeze(dim = 2), 
+        #                                         lat_weight = torch.ones(output_norm_surface_data.unsqueeze(dim = 2).shape).to(accelerator.device))
         # accelerator.print("training surface_MSE_loss: ", surface_MSE_loss)
-        loss = torch.mean(surface_MAE_loss)
+    
+        loss = myloss(output_norm_surface_data.flatten(1), input_norm_surface_data.flatten(1))        
         # loss = 0.1 * surface_MAE_loss[0] + 0.4 * surface_MAE_loss[1] + 0.4 * surface_MAE_loss[2] + 0.1 * surface_MAE_loss[3]
         
         
